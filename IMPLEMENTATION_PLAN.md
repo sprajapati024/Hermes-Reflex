@@ -463,7 +463,9 @@ search_reflex_memory(query: str, top_k: int = 8) -> list[dict]
 
 ---
 
-## 8. Phase 4 - Rule Engine
+## 8. Phase 4 - Rule Engine ✓
+
+**Status:** Complete — commit `7cc5fe5`
 
 ### Goal
 
@@ -551,7 +553,9 @@ Return:
 
 ---
 
-## 9. Phase 5 - Cheap Critic Layer
+## 9. Phase 5 - Cheap Critic Layer ✓
+
+**Status:** Complete — built in this session
 
 ### Goal
 
