@@ -3,7 +3,7 @@ pyyaml>=6.0
 python-dotenv>=1.0.0
 
 # GBrain markdown storage
-gray-matter>=0.9.7
+python-frontmatter>=1.1.0
 
 # Embeddings
 openai>=1.12.0
