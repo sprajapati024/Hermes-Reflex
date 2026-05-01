@@ -1,0 +1,37 @@
+project: hermes-reflex
+interface: telegram
+runtime: hermes
+memory: gbrain
+
+reflex:
+  enabled: true
+  max_unsolicited_interventions_per_day: 1
+  default_response_mode: ALLOW
+  require_evidence_for_challenge: true
+
+openai_embeddings:
+  provider: openai
+  model: text-embedding-3-small
+  dimensions: 1536
+  batch_size: 100
+
+retrieval:
+  top_k: 8
+  min_score: 0.65
+  allowed_paths:
+    - reflex/patterns
+    - reflex/experiments
+    - reflex/reviews
+    - reflex/checkins
+    - reflex/skillify-candidates
+    - reflex/contracts
+    - projects/active
+
+critic:
+  output_format: json_only
+  allow_override_default: true
+
+paths:
+  gbrain_root: ~/gbrain
+  embeddings_index: ~/gbrain/reflex/embeddings/index.sqlite
+  embeddings_manifest: ~/gbrain/reflex/embeddings/manifest.json
