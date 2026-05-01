@@ -35,6 +35,9 @@ from .pause import run_pause, run_resume, run_pause_status
 
 log = logging.getLogger(__name__)
 
+# Verbose mode toggle — set via /reflex verbose on|off, or HERMES_REFLEX_VERBOSE env var
+_verbose_enabled: bool = False
+
 
 # --------------------------------------------------------------------------
 # Check-in state tracker (session-level)
@@ -295,7 +298,9 @@ def _handle_patterns(text: str) -> str:
 
 
 def _handle_reflex(text: str) -> str:
-    """Handle /reflex <question> and /reflex pause/resume."""
+    """Handle /reflex <question> and /reflex pause/resume/verbose."""
+    global _verbose_enabled
+
     # /reflex pause today
     if re.search(r"pause\s+today", text, re.IGNORECASE):
         return run_pause("today")
@@ -306,12 +311,37 @@ def _handle_reflex(text: str) -> str:
     if re.search(r"resume", text, re.IGNORECASE):
         return run_resume()
 
+    # /reflex verbose on
+    if re.search(r"^/reflex\s+verbose\s+on\s*$", text, re.IGNORECASE):
+        _verbose_enabled = True
+        return "🔍 Verbose mode *on*. Trace will be appended to each /reflex response."
+
+    # /reflex verbose off
+    if re.search(r"^/reflex\s+verbose\s+off\s*$", text, re.IGNORECASE):
+        _verbose_enabled = False
+        return "🔇 Verbose mode *off*."
+
+    # /reflex verbose (status)
+    if re.search(r"^/reflex\s+verbose\s*$", text, re.IGNORECASE):
+        state = "on" if _verbose_enabled else "off"
+        return f"🔍 Verbose mode is *{state}*."
+
+    # verbose: one-shot prefix — run with verbose=True regardless of global toggle
+    match = re.match(r"^/reflex\s+verbose:\s*(.+)$", text, re.IGNORECASE | re.DOTALL)
+    if match:
+        question = match.group(1).strip()
+        try:
+            return run_reflex_query(question, verbose=True)
+        except Exception as exc:
+            log.warning("[Reflex] /reflex verbose: query failed: %s", exc)
+            return f"Reflex verbose query failed: {exc}"
+
     # /reflex <question>
     match = re.match(r"^/reflex\s+(.+)$", text)
     if match:
         question = match.group(1).strip()
         try:
-            return run_reflex_query(question)
+            return run_reflex_query(question, verbose=_verbose_enabled)
         except Exception as exc:
             log.warning("[Reflex] /reflex query failed: %s", exc)
             return f"Reflex query failed: {exc}"
@@ -321,7 +351,10 @@ def _handle_reflex(text: str) -> str:
         "/reflex <your question>\\n"
         "/reflex pause today\\n"
         "/reflex pause week\\n"
-        "/reflex resume"
+        "/reflex resume\\n"
+        "/reflex verbose on\\n"
+        "/reflex verbose off\\n"
+        "/reflex verbose:<question>"
     )
 
 

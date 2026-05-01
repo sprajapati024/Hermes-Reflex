@@ -224,6 +224,106 @@ class TestHandleOverride:
         assert "Usage" in result or "reason" in result.lower()
 
 
+class TestVerboseRouter:
+    """Test /reflex verbose subcommands and verbose: prefix."""
+
+    def test_reflex_verbose_on(self):
+        import src.commands.router as router_mod
+        router_mod._verbose_enabled = False
+        result = _handle_reflex("/reflex verbose on")
+        assert "on" in result.lower()
+        assert router_mod._verbose_enabled is True
+
+    def test_reflex_verbose_off(self):
+        import src.commands.router as router_mod
+        router_mod._verbose_enabled = True
+        result = _handle_reflex("/reflex verbose off")
+        assert "off" in result.lower()
+        assert router_mod._verbose_enabled is False
+
+    def test_reflex_verbose_status_when_on(self):
+        import src.commands.router as router_mod
+        router_mod._verbose_enabled = True
+        result = _handle_reflex("/reflex verbose")
+        assert "on" in result.lower()
+
+    def test_reflex_verbose_status_when_off(self):
+        import src.commands.router as router_mod
+        router_mod._verbose_enabled = False
+        result = _handle_reflex("/reflex verbose")
+        assert "off" in result.lower()
+
+    @patch("src.commands.reflex.process_reflex")
+    def test_reflex_verbose_prefix_one_shot(self, mock_process):
+        from src.core.schemas import ReflexResult
+        from src.core.trace import TraceEntry
+        import src.commands.router as router_mod
+        router_mod._verbose_enabled = False  # global is off
+
+        mock_process.return_value = ReflexResult(
+            mode="ALLOW",
+            risk_type="none",
+            confidence=0.0,
+            severity="low",
+            hermes_instruction="Respond normally.",
+            evidence=[],
+            verbose=True,
+            trace=[TraceEntry("bypass_check", "✅ Pass", "not a command", 0.5)],
+        )
+        _handle_reflex("/reflex verbose: Should I deploy to prod?")
+
+        _, kwargs = mock_process.call_args
+        assert kwargs.get("verbose") is True
+        # global toggle stays off
+        assert router_mod._verbose_enabled is False
+
+    @patch("src.commands.reflex.process_reflex")
+    def test_reflex_query_passes_verbose_enabled(self, mock_process):
+        from src.core.schemas import ReflexResult
+        import src.commands.router as router_mod
+        router_mod._verbose_enabled = True
+
+        mock_process.return_value = ReflexResult(
+            mode="ALLOW",
+            risk_type="none",
+            confidence=0.0,
+            severity="low",
+            hermes_instruction="",
+            evidence=[],
+        )
+        _handle_reflex("/reflex Can I push this?")
+
+        _, kwargs = mock_process.call_args
+        assert kwargs.get("verbose") is True
+
+
+@patch("src.commands.reflex.process_reflex")
+def test_run_reflex_query_formats_trace(mock_process):
+    """Verbose result includes a formatted trace block in the output."""
+    from src.commands.reflex import run_reflex_query
+    from src.core.schemas import ReflexResult
+    from src.core.trace import TraceEntry
+
+    mock_process.return_value = ReflexResult(
+        mode="ALLOW",
+        risk_type="none",
+        confidence=0.0,
+        severity="low",
+        hermes_instruction="Respond normally.",
+        evidence=[],
+        verbose=True,
+        trace=[
+            TraceEntry("bypass_check", "✅ Pass", "Not a command", 1.2),
+            TraceEntry("route", "✅ SAFE", "No risk detected", 0.8),
+        ],
+    )
+    result = run_reflex_query("What should I focus on?", verbose=True)
+
+    assert "Reflex Pipeline Trace" in result
+    assert "Pipeline" in result
+    assert "ALLOW" in result
+
+
 class TestIntegration:
     """Integration tests — full routing round-trip."""
 

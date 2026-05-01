@@ -502,3 +502,114 @@ def test_get_hermes_instruction_require_override():
 
 def test_get_hermes_instruction_unknown_returns_empty():
     assert get_hermes_instruction("BANANA_MODE") == ""
+
+
+# ---------------------------------------------------------------------------
+# Verbose / trace mode
+# ---------------------------------------------------------------------------
+
+class TestVerboseMode:
+    """Tests for verbose=True pipeline tracing."""
+
+    def test_verbose_bypass_populates_trace(self):
+        result = process_reflex("/checkin energy 8", verbose=True)
+        assert result.verbose is True
+        assert len(result.trace) >= 1
+        assert result.trace[0].stage == "bypass_check"
+        assert result.trace[0].latency_ms >= 0
+
+    def test_verbose_full_pipeline_populates_trace(self):
+        with patch("src.core.pause.is_paused") as mock_paused, \
+             patch("src.core.rule_engine.evaluate_rules") as mock_rules, \
+             patch("src.core.operating_contract.load_contract") as mock_contract, \
+             patch("src.embeddings.search.search_reflex_memory") as mock_search, \
+             patch("src.gbrain.storage.read_active_patterns") as mock_patterns, \
+             patch("src.gbrain.storage.read_active_experiments") as mock_experiments, \
+             patch("src.critic.critic") as mock_critic, \
+             patch("src.gbrain.storage.write_decision"), \
+             patch("src.gbrain.storage.write_signal"):
+
+            mock_paused.return_value = False
+            mock_contract.return_value = _mock_to_dict({"constraints": {}})
+            mock_rule_result = MagicMock()
+            mock_rule_result.to_dict.return_value = {
+                "risk_flags": ["ui_avoidance"],
+                "confidence": 0.78,
+                "recommended_mode": "CHALLENGE",
+                "matched_terms": ["dashboard"],
+            }
+            mock_rules.return_value = mock_rule_result
+            mock_search.return_value = [
+                {"id": "exp_1", "type": "experiment", "summary": "No Dashboard", "score": 0.90, "title": "No Dashboard"}
+            ]
+            mock_patterns.return_value = []
+            mock_experiments.return_value = [{"name": "No Dashboard Build"}]
+
+            mock_decision = MagicMock()
+            mock_decision.mode = "CHALLENGE"
+            mock_decision.risk_type = "ui_avoidance"
+            mock_decision.confidence = 0.86
+            mock_decision.severity = "medium"
+            mock_decision.reason = "Conflicts with experiment."
+            mock_decision.recommended_action = "Check alignment."
+            mock_decision.allow_override = True
+            mock_decision.to_dict.return_value = {
+                "mode": "CHALLENGE", "risk_type": "ui_avoidance",
+                "confidence": 0.86, "severity": "medium", "allow_override": True,
+            }
+            mock_critic.return_value = mock_decision
+
+            result = process_reflex("Should I add a dashboard?", verbose=True)
+
+        assert result.verbose is True
+        stages = [e.stage for e in result.trace]
+        for expected in ("bypass_check", "pause_check", "rules_check", "contract_check",
+                         "route", "cache_check", "retrieval", "recent_patterns",
+                         "critic_call", "mode_select"):
+            assert expected in stages, f"Stage '{expected}' missing from trace: {stages}"
+        assert all(e.latency_ms >= 0 for e in result.trace)
+
+    def test_verbose_false_produces_empty_trace(self):
+        result = process_reflex("/checkin energy 8")
+        assert result.verbose is False
+        assert result.trace == []
+
+    def test_verbose_env_var_enables_trace(self):
+        with patch.dict("os.environ", {"HERMES_REFLEX_VERBOSE": "true"}):
+            result = process_reflex("/checkin energy 8")
+        assert result.verbose is True
+        assert len(result.trace) >= 1
+
+    def test_trace_entry_latency_non_negative(self):
+        result = process_reflex("/checkin energy 8", verbose=True)
+        for entry in result.trace:
+            assert entry.latency_ms >= 0, f"Negative latency on stage {entry.stage}"
+
+    def test_verbose_safe_fast_path(self):
+        with patch("src.core.pause.is_paused") as mock_paused, \
+             patch("src.core.rule_engine.evaluate_rules") as mock_rules, \
+             patch("src.core.operating_contract.load_contract") as mock_contract, \
+             patch("src.gbrain.storage.read_active_experiments") as mock_experiments, \
+             patch("src.core.operating_contract.check_contract_conflict") as mock_conflict:
+
+            mock_paused.return_value = False
+            mock_contract.return_value = _mock_to_dict({"constraints": {}})
+            mock_experiments.return_value = []
+            mock_conflict.return_value = _mock_to_dict({"conflict": False})
+            mock_rule_result = MagicMock()
+            mock_rule_result.to_dict.return_value = {
+                "risk_flags": [],
+                "confidence": 0.0,
+                "recommended_mode": "ALLOW",
+                "matched_terms": [],
+            }
+            mock_rules.return_value = mock_rule_result
+
+            result = process_reflex("What's for lunch today?", verbose=True)
+
+        assert result.mode == "ALLOW"
+        assert result.verbose is True
+        stages = [e.stage for e in result.trace]
+        assert "route" in stages
+        route_entry = next(e for e in result.trace if e.stage == "route")
+        assert "SAFE" in route_entry.status

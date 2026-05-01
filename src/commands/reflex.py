@@ -17,6 +17,7 @@ def run_reflex_query(
     project: Optional[str] = None,
     skip_retrieval: bool = False,
     skip_critic: bool = False,
+    verbose: bool = False,
 ) -> str:
     """Run the full Reflex middleware on a question and return the result.
 
@@ -32,6 +33,7 @@ def run_reflex_query(
         include_reflex_instructions=True,
         skip_retrieval=skip_retrieval,
         skip_critic=skip_critic,
+        verbose=verbose,
     )
 
     # Format for Telegram
@@ -59,4 +61,22 @@ def run_reflex_query(
     if result.decision_id:
         lines.append(f"\n_ID: {result.decision_id}_")
 
+    if result.verbose and result.trace:
+        lines.append(_format_trace(result))
+
     return "\n".join(lines)
+
+
+def _format_trace(result) -> str:
+    """Format the pipeline trace as a Telegram-friendly block."""
+    separator = "─" * 25
+    parts = ["\n🔍 *Reflex Pipeline Trace*", separator]
+    total_ms = sum(e.latency_ms for e in result.trace)
+    for i, entry in enumerate(result.trace, start=1):
+        parts.append(f"Stage {i}: {entry.stage.replace('_', ' ').title()} → {entry.status}")
+        if entry.detail:
+            parts.append(f"   {entry.detail}")
+    parts.append(separator)
+    parts.append(f"✅ Decision: {result.mode}")
+    parts.append(f"⏱️  Pipeline: {total_ms:.0f}ms total")
+    return "\n".join(parts)

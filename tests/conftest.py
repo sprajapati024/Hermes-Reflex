@@ -29,3 +29,12 @@ def clear_reflex_decision_cache():
     yield
     with _cache_lock:
         _decision_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_verbose_state():
+    """Reset the module-level verbose toggle in router between tests."""
+    import src.commands.router as router_mod
+    router_mod._verbose_enabled = False
+    yield
+    router_mod._verbose_enabled = False
