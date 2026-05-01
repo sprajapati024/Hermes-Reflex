@@ -40,12 +40,14 @@ Telegram → Reflex Middleware
 | 2 | Operating contract | ✅ |
 | 3 | Embedding + retrieval (OpenAI `text-embedding-3-small`) | ✅ |
 | 4 | Rule engine (7 risk types) | ✅ |
-| 5 | Cheap critic layer | 🔜 |
-| 6 | Reflex middleware | 🔜 |
-| 7 | Telegram commands | 🔜 |
-| 8–10 | Pattern lifecycle, weekly review, skillify | 🔜 |
+| 5 | Cheap critic layer (JSON-only LLM judge) | ✅ |
+| 6 | Reflex middleware | ✅ |
+| 7 | Telegram commands | ✅ |
+| 8 | Pattern lifecycle (candidate → watching → active → retired) | ✅ |
+| 9 | Weekly review generator | ✅ |
+| 10 | Skillify candidates | ✅ |
 
-**151/151 tests passing**
+**336/336 tests passing**
 
 ---
 
@@ -98,25 +100,27 @@ PYTHONPATH=src python3 -m pytest  # run tests
 ```
 Hermes-Reflex/
 ├── src/
-│   ├── core/          — operating_contract, rule_engine, config
-│   ├── gbrain/        — storage, paths, frontmatter, markdown
-│   ├── embeddings/    — openai_client, chunker, indexer, search, manifest
-│   ├── patterns/      — rules, public API
-│   ├── critic/        — (Phase 5)
-│   ├── commands/      — (Phase 7)
-│   ├── experiments/   — (Phase 9)
-│   ├── reviews/       — (Phase 9)
-│   └── interventions/ — (Phase 10)
-├── tests/             — 151 tests
-├── scripts/           — rebuild_index.py, update_changed.py
+│   ├── core/           — middleware, rule_engine, operating_contract,
+│   │                      response_modes, schemas, config, pause
+│   ├── gbrain/         — storage, paths, frontmatter, markdown
+│   ├── embeddings/     — openai_client, chunker, indexer, search, manifest
+│   ├── patterns/       — rules, detector, lifecycle, evidence
+│   ├── critic/         — prompt, client, parser, decision
+│   ├── commands/       — router, checkin, experiment, patterns, reflex,
+│   │                      review, override, pause
+│   ├── reviews/        — weekly
+│   ├── interventions/  — skillify
+│   └── experiments/    — (referenced by commands/experiments.py)
+├── tests/              — 336 tests across all modules
+├── scripts/            — rebuild_index.py, update_changed.py
 ├── config.yaml
 ├── requirements.txt
-└── docs/
-    ├── PRD.md
-    ├── IMPLEMENTATION_PLAN.md
-    ├── QA_AUDIT.md
-    ├── USER_STORIES.md
-    └── AGENT_BUILD_INSTRUCTIONS.md
+├── README.md
+├── IMPLEMENTATION_PLAN.md
+├── AGENTS.md
+├── PRD.md
+├── QA_AUDIT.md
+└── USER_STORIES.md
 ```
 
 ---
@@ -139,4 +143,4 @@ Success criteria: ship `/experiment`, `/checkin`, `/patterns`, `/reflex` before 
 - [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — Phase-by-phase build guide
 - [QA_AUDIT.md](./QA_AUDIT.md) — Theory audit and loophole fixes
 - [USER_STORIES.md](./USER_STORIES.md) — User flows and experience
-- [AGENT_BUILD_INSTRUCTIONS.md](./AGENT_BUILD_INSTRUCTIONS.md) — Agent build instructions
+- [AGENTS.md](./AGENTS.md) — Agent build instructions and operating rules
