@@ -1,0 +1,18 @@
+id: integration_avoidance
+severity: medium
+mode: CHALLENGE
+enabled: true
+cooldown_hours: 0
+requires_evidence: false
+terms:
+  - add integration
+  - API integration
+  - third-party
+  - third party
+  - OAuth
+  - webhook handler
+  - Slack integration
+  - Discord integration
+  - Zapier
+  - Make.com
+  - n8n

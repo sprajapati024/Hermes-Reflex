@@ -359,10 +359,15 @@ def test_process_reflex_logs_decision_on_challenge():
 
 
 def test_process_reflex_no_signal_on_allow():
-    """When mode is ALLOW, no signal file is written (only decision)."""
+    """Safe messages skip GBrain logging entirely (no write_decision, no write_signal).
+
+    The Reflex v2 fast path returns ALLOW immediately for messages with no risk
+    signal, so neither write_decision nor write_signal should be called.
+    """
     with patch("src.core.pause.is_paused") as mock_paused, \
          patch("src.core.rule_engine.evaluate_rules") as mock_rules, \
          patch("src.core.operating_contract.load_contract") as mock_contract, \
+         patch("src.core.operating_contract.check_contract_conflict") as mock_conflict, \
          patch("src.embeddings.search.search_reflex_memory") as mock_search, \
          patch("src.gbrain.storage.read_active_patterns") as mock_patterns, \
          patch("src.gbrain.storage.read_active_experiments") as mock_exps, \
@@ -373,25 +378,16 @@ def test_process_reflex_no_signal_on_allow():
         mock_paused.return_value = False
         mock_rules.return_value = _mock_to_dict({"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
         mock_contract.return_value = _mock_to_dict({"constraints": {}})
+        mock_conflict.return_value = MagicMock(to_dict=lambda: {"conflict": False})
         mock_search.return_value = []
         mock_patterns.return_value = []
         mock_exps.return_value = []
 
-        mock_decision = MagicMock()
-        mock_decision.mode = "ALLOW"
-        mock_decision.risk_type = "none"
-        mock_decision.confidence = 0.0
-        mock_decision.severity = "low"
-        mock_decision.reason = ""
-        mock_decision.recommended_action = ""
-        mock_decision.allow_override = True
-        mock_decision.to_dict.return_value = {"mode": "ALLOW", "risk_type": "none", "confidence": 0.0, "severity": "low"}
-        mock_critic.return_value = mock_decision
-
         result = process_reflex("Help me debug this script")
 
     assert result.mode == "ALLOW"
-    mock_write_dec.assert_called_once()
+    # v2 fast path: safe messages skip GBrain logging entirely
+    mock_write_dec.assert_not_called()
     mock_write_sig.assert_not_called()
 
 

@@ -31,6 +31,29 @@ critic:
   output_format: json_only
   allow_override_default: true
 
+# Reflex v2 adaptive pipeline settings.
+# All values can be overridden via environment variables.
+reflex_v2:
+  # Hard timeout for the LLM critic in milliseconds.
+  # If the critic does not respond within this budget, the deterministic
+  # rule/contract result is used instead.
+  critic_timeout_ms: 700            # env: HERMES_REFLEX_CRITIC_TIMEOUT_MS
+
+  # Set to false to disable the critic entirely (rules-only mode).
+  critic_enabled: true              # env: HERMES_REFLEX_CRITIC_ENABLED
+
+  # How long (seconds) to cache ALLOW/NOTE/CHALLENGE decisions for
+  # repeated messages with the same contract + experiment fingerprint.
+  decision_cache_ttl_seconds: 300   # env: HERMES_REFLEX_DECISION_CACHE_TTL_SECONDS
+
+  # Push GBrain decision/signal writes to a background thread so they
+  # never add latency to the user response path.
+  async_logging: false              # env: HERMES_REFLEX_ASYNC_LOGGING
+
+  # Directory containing YAML rule overrides.
+  # Falls back to built-in rules if the directory is missing.
+  rules_dir: ~/gbrain/reflex/rules  # env: HERMES_REFLEX_RULES_DIR
+
 paths:
   gbrain_root: ~/gbrain
   embeddings_index: ~/gbrain/reflex/embeddings/index.sqlite

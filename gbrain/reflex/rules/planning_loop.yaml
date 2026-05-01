@@ -1,0 +1,19 @@
+id: planning_loop
+severity: medium
+mode: CHALLENGE
+enabled: true
+cooldown_hours: 0
+requires_evidence: false
+terms:
+  - rethink
+  - pivot again
+  - start from scratch
+  - redo the spec
+  - redo the prd
+  - rewrite the spec
+  - rewrite the prd
+  - rewrite the roadmap
+  - go back to the drawing board
+  - go back to planning
+  - reevaluate the approach
+  - more advanced

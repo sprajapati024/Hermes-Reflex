@@ -1,0 +1,12 @@
+id: project_switching
+severity: high
+mode: REQUIRE_OVERRIDE
+enabled: true
+cooldown_hours: 0
+requires_evidence: false
+terms:
+  - switch to project
+  - work on the other project
+  - context switch
+  - put on hold
+  - drop what we're doing

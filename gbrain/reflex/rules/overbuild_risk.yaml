@@ -1,0 +1,18 @@
+id: overbuild_risk
+severity: high
+mode: REQUIRE_OVERRIDE
+enabled: true
+cooldown_hours: 0
+requires_evidence: false
+terms:
+  - multi-user
+  - multiuser
+  - SaaS
+  - saas
+  - analytics
+  - mobile app
+  - vector DB
+  - vector database
+  - machine learning
+  - fine-tune
+  - fine tuning

@@ -1,0 +1,19 @@
+id: ui_avoidance
+severity: high
+mode: REQUIRE_OVERRIDE
+enabled: true
+cooldown_hours: 24
+requires_evidence: false
+terms:
+  - dashboard
+  - frontend
+  - React
+  - Vue
+  - Angular
+  - Tailwind
+  - design system
+  - UI layer
+  - stylesheet
+  - CSS
+  - landing page
+  - web interface

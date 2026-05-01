@@ -3,25 +3,36 @@
 This module runs BEFORE the LLM critic. It uses simple pattern matching
 to catch obvious risks without any AI involved.
 
-Risk types detected:
-  - planning_loop:    Rethinking/replanning instead of executing
-  - ui_avoidance:     Adding UI work when user said no UI
-  - project_switching: Switching projects instead of finishing current
+Built-in risk types:
+  - planning_loop:         Rethinking/replanning instead of executing
+  - ui_avoidance:          Adding UI work when user said no UI
+  - project_switching:     Switching projects instead of finishing current
   - integration_avoidance: Adding integrations instead of core work
-  - overbuild_risk:   Feature creep / infrastructure cosplay
-  - contract_conflict: Message conflicts with operating contract constraints
+  - overbuild_risk:        Feature creep / infrastructure cosplay
+  - contract_conflict:     Conflicts with operating contract constraints
+  - experiment_conflict:   Requests to end active experiments early
 
-Each risk type has:
-  - terms:    list of regex patterns (compiled once at import)
+YAML rules:
+  Additional rules are loaded from the directory specified by
+  HERMES_REFLEX_RULES_DIR (default: ~/gbrain/reflex/rules).
+  YAML rules are merged with built-ins; same-ID YAML rules override built-ins.
+  Falls back gracefully if the directory is missing or unreadable.
+
+Each rule has:
+  - terms:    list of regex patterns (compiled once at load)
   - severity: HIGH → REQUIRE_OVERRIDE, MEDIUM → CHALLENGE
   - response: suggested mode
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Data structures
@@ -182,6 +193,99 @@ for _risk_type, _config in _RISK_RULES.items():
 
 
 # -----------------------------------------------------------------------------
+# YAML rule loading
+# -----------------------------------------------------------------------------
+
+def _compile_yaml_term(term: str) -> Optional[re.Pattern]:
+    """Compile a YAML rule term as a regex.
+
+    Plain words (no regex metacharacters) are wrapped in word boundaries.
+    Terms that already look like patterns are used as-is.
+    """
+    has_meta = bool(re.search(r'[\\|()\[\]{}^$*+?]', term))
+    pattern = term if has_meta else rf'\b{re.escape(term)}\b'
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        return None
+
+
+def load_yaml_rules(rules_dir: Optional[str] = None) -> dict[str, dict]:
+    """Load rule definitions from YAML files.
+
+    Args:
+        rules_dir: Directory to load from.  If None, reads
+                   HERMES_REFLEX_RULES_DIR env var, then falls back to
+                   ~/gbrain/reflex/rules.
+
+    Returns:
+        dict mapping rule_id → rule config dict (same shape as _RISK_RULES).
+        Empty dict if the directory is missing or unreadable.
+    """
+    if rules_dir is None:
+        rules_dir = os.environ.get(
+            "HERMES_REFLEX_RULES_DIR",
+            os.path.expanduser("~/gbrain/reflex/rules"),
+        )
+
+    if not os.path.isdir(rules_dir):
+        return {}
+
+    try:
+        import yaml
+    except ImportError:
+        log.warning("[Reflex] pyyaml not installed — YAML rules disabled")
+        return {}
+
+    loaded: dict[str, dict] = {}
+    for filename in sorted(os.listdir(rules_dir)):
+        if not (filename.endswith(".yaml") or filename.endswith(".yml")):
+            continue
+        filepath = os.path.join(rules_dir, filename)
+        try:
+            with open(filepath, encoding="utf-8") as fh:
+                rule = yaml.safe_load(fh)
+            if not isinstance(rule, dict):
+                continue
+            if not rule.get("enabled", True):
+                continue
+
+            rule_id = str(rule.get("id") or filename.replace(".yaml", "").replace(".yml", ""))
+            severity_raw = str(rule.get("severity", "medium")).upper()
+            severity = SEVERITY_HIGH if severity_raw == "HIGH" else SEVERITY_MEDIUM
+            terms = [str(t) for t in (rule.get("terms") or [])]
+            compiled = [c for t in terms if (c := _compile_yaml_term(t)) is not None]
+
+            loaded[rule_id] = {
+                "severity": severity,
+                "terms": terms,
+                "_compiled": compiled,
+                "_from_yaml": True,
+                "requires_evidence": bool(rule.get("requires_evidence", False)),
+                "cooldown_hours": int(rule.get("cooldown_hours", 0)),
+            }
+        except Exception as exc:
+            log.warning("[Reflex] failed to load YAML rule %s: %s", filename, exc)
+
+    return loaded
+
+
+def _build_active_rules() -> dict[str, dict]:
+    """Merge built-in rules with YAML overrides. YAML wins on ID collision."""
+    yaml_rules = {}
+    try:
+        yaml_rules = load_yaml_rules()
+    except Exception as exc:
+        log.warning("[Reflex] YAML rule load failed: %s", exc)
+    return {**_RISK_RULES, **yaml_rules}
+
+
+# Active rules: built-ins + any YAML overrides loaded at import time.
+# Call _build_active_rules() again if you need to hot-reload after startup.
+_ACTIVE_RULES: dict[str, dict] = _build_active_rules()
+
+
+# -----------------------------------------------------------------------------
 # Public API
 # -----------------------------------------------------------------------------
 
@@ -191,19 +295,21 @@ def evaluate_rules(
 ) -> RuleResult:
     """Evaluate all rules against a user message.
 
+    Checks built-in rules plus any YAML rules loaded at startup.
+
     Args:
         user_message: The raw user message to evaluate.
         context: Optional context dict with keys:
             - operating_contract: dict with constraint patterns
             - active_experiments: list of experiment names
-            - enabled_risks: list of risk types to check (default all)
+            - enabled_risks: list of risk types to check (default: all active)
 
     Returns:
         RuleResult with risk_flags, confidence, recommended_mode, matched_rules.
     """
     context = context or {}
     result = RuleResult()
-    enabled = context.get("enabled_risks", list(_RISK_RULES.keys()))
+    enabled = context.get("enabled_risks", list(_ACTIVE_RULES.keys()))
 
     # Normalise message for matching
     normalised = _normalise(user_message)
@@ -214,7 +320,7 @@ def evaluate_rules(
             _check_contract_conflict(normalised, context, result)
         elif risk_type == "experiment_conflict":
             _check_experiment_conflict(normalised, context, result)
-        elif risk_type in _RISK_RULES:
+        elif risk_type in _ACTIVE_RULES:
             _check_keyword_rules(risk_type, normalised, result)
 
     # Compute overall recommended mode (most severe wins)
@@ -227,7 +333,7 @@ def evaluate_rules(
 
 
 def _check_keyword_rules(risk_type: str, text: str, result: RuleResult) -> None:
-    config = _RISK_RULES[risk_type]
+    config = _ACTIVE_RULES[risk_type]
     severity = config["severity"]
     response = _SEVERITY_RESPONSE[severity]
 
