@@ -1,28 +1,35 @@
-"""OpenAI client wrapper for the Hermes Reflex critic.
+"""LLM critic client for Hermes Reflex.
 
-This module provides the `critic()` function — the main public API for calling
-the LLM critic layer. It:
-1. Assembles the prompt from critic/prompt.py
-2. Calls the configured cheap model via the OpenAI SDK
-3. Parses the JSON response using critic/parser.py
-4. Retries on transient failures (up to 3 attempts)
-5. Returns a CriticDecision (never None — falls back to default_allow on error)
+This module provides the public ``critic()`` function. It builds the critic
+prompt, calls a cheap JSON-only model, parses the response, retries transient
+errors, and always returns a ``CriticDecision``.
 
-Environment variables:
-  OPENAI_API_KEY          — required
-  HERMES_REFLEX_CRITIC_MODEL — model name, default "gpt-4o-mini"
-  HERMES_REFLEX_MAX_TOKENS   — max tokens, default 512
-  HERMES_REFLEX_TEMPERATURE  — temperature, default 0.1
+Provider selection:
+  HERMES_REFLEX_CRITIC_PROVIDER = auto | openai | minimax  (default: auto)
+  OPENAI_API_KEY                = OpenAI key for the OpenAI chat-completions path
+  MINIMAX_API_KEY               = MiniMax key for the Anthropic-compatible path
+  HERMES_REFLEX_CRITIC_MODEL    = explicit model override
+  HERMES_REFLEX_OPENAI_MODEL    = OpenAI model override, default gpt-4o-mini
+  HERMES_REFLEX_MINIMAX_MODEL   = MiniMax model override, default MiniMax-M2.7
+  HERMES_REFLEX_MAX_TOKENS      = max output tokens, default 512
+  HERMES_REFLEX_TEMPERATURE     = sampling temperature, default 0.1
+
+``auto`` tries OpenAI first for backward compatibility, then MiniMax when the
+OpenAI path is missing/invalid. This keeps Reflex operational on Shirin's
+current Hermes VPS, where MiniMax is configured but the OpenAI key may be absent
+or stale.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import time
 import typing as t
 from dataclasses import dataclass
 from functools import lru_cache
 
+import anthropic
 import openai
 
 from . import prompt as prompt_module
@@ -34,17 +41,22 @@ from .parser import ParseError, parse_critic_response
 # Config
 # ---------------------------------------------------------------------------
 
-_CRITIC_MODEL = os.environ.get(
-    "HERMES_REFLEX_CRITIC_MODEL", "gpt-4o-mini"
-)
+_PROVIDER = os.environ.get("HERMES_REFLEX_CRITIC_PROVIDER", "auto").strip().lower()
+_OPENAI_MODEL = os.environ.get("HERMES_REFLEX_OPENAI_MODEL", "gpt-4o-mini")
+_MINIMAX_MODEL = os.environ.get("HERMES_REFLEX_MINIMAX_MODEL", "MiniMax-M2.7")
+_MODEL_OVERRIDE = os.environ.get("HERMES_REFLEX_CRITIC_MODEL")
 _MAX_TOKENS = int(os.environ.get("HERMES_REFLEX_MAX_TOKENS", "512"))
 _TEMPERATURE = float(os.environ.get("HERMES_REFLEX_TEMPERATURE", "0.1"))
 _MAX_RETRIES = 3
 _RETRY_DELAY_BASE = 1.0  # seconds
+_MINIMAX_BASE_URL = os.environ.get(
+    "HERMES_REFLEX_MINIMAX_BASE_URL",
+    "https://api.minimax.io/anthropic",
+).rstrip("/")
 
 
 # ---------------------------------------------------------------------------
-# OpenAI client (lazy singleton)
+# Client singletons
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -52,6 +64,7 @@ class _RetryLog:
     attempt: int
     waited: float
     error: str
+    provider: str = "openai"
 
 
 @lru_cache(maxsize=1)
@@ -61,9 +74,21 @@ def _get_client() -> openai.OpenAI:
     if not api_key:
         raise EnvironmentError(
             "OPENAI_API_KEY environment variable is not set. "
-            "The critic layer requires a valid OpenAI API key."
+            "OpenAI critic provider requires a valid OpenAI API key."
         )
     return openai.OpenAI(api_key=api_key)
+
+
+@lru_cache(maxsize=1)
+def _get_minimax_client() -> anthropic.Anthropic:
+    """Return a cached MiniMax Anthropic-compatible client instance."""
+    api_key = os.environ.get("MINIMAX_API_KEY")
+    if not api_key:
+        raise EnvironmentError(
+            "MINIMAX_API_KEY environment variable is not set. "
+            "MiniMax critic provider requires a valid MiniMax API key."
+        )
+    return anthropic.Anthropic(api_key=api_key, base_url=_MINIMAX_BASE_URL)
 
 
 # ---------------------------------------------------------------------------
@@ -107,25 +132,12 @@ def critic(
     model: str | None = None,
     max_retries: int | None = None,
 ) -> CriticDecision:
-    """Call the LLM critic and return a validated CriticDecision.
+    """Call the configured critic provider and return a validated decision.
 
-    This is the main entry point for the critic layer.
-
-    Args:
-        user_message: The raw user message being classified.
-        rule_result: Output from the rule engine (dict).
-        contract_conflict: Output from check_contract_conflict() (dict).
-        active_experiments: List of active experiment dicts.
-        retrieved_evidence: List of evidence dicts from embedding search.
-        recent_patterns: List of recently active pattern dicts.
-        model: Override the default critic model.
-        max_retries: Override the default max retry count.
-
-    Returns:
-        A CriticDecision instance. Never returns None — on all failures
-        returns CriticDecision.default_allow() so the pipeline can continue.
+    This function never raises. If all providers fail, it returns
+    ``CriticDecision.default_allow()`` so the middleware can continue and apply
+    deterministic rule/contract fallbacks.
     """
-    model = model or _CRITIC_MODEL
     max_retries = max_retries if max_retries is not None else _MAX_RETRIES
     retry_log: list[_RetryLog] = []
 
@@ -143,32 +155,77 @@ def critic(
         {"role": "user", "content": user_content},
     ]
 
+    for provider in _provider_candidates():
+        provider_model = _model_for_provider(provider, model)
+        decision = _try_provider(
+            provider=provider,
+            model=provider_model,
+            messages=messages,
+            max_retries=max_retries,
+            retry_log=retry_log,
+        )
+        if decision is not None:
+            return decision
+
+    _log_critic_failure(
+        user_message=user_message,
+        provider_model=_provider_model_label(model),
+        retry_log=retry_log,
+    )
+    return CriticDecision.default_allow()
+
+
+# ---------------------------------------------------------------------------
+# Provider calls
+# ---------------------------------------------------------------------------
+
+def _provider_candidates() -> list[str]:
+    """Return the provider order for this call."""
+    if _PROVIDER in {"openai", "minimax"}:
+        return [_PROVIDER]
+    if _PROVIDER not in {"", "auto"}:
+        return [_PROVIDER]
+    # Backward-compatible order: OpenAI first, MiniMax as operational fallback.
+    return ["openai", "minimax"]
+
+
+def _model_for_provider(provider: str, override: str | None) -> str:
+    if override:
+        return override
+    if _MODEL_OVERRIDE:
+        return _MODEL_OVERRIDE
+    if provider == "minimax":
+        return _MINIMAX_MODEL
+    return _OPENAI_MODEL
+
+
+def _provider_model_label(override: str | None) -> str:
+    return ", ".join(f"{p}:{_model_for_provider(p, override)}" for p in _provider_candidates())
+
+
+def _try_provider(
+    *,
+    provider: str,
+    model: str,
+    messages: list[dict[str, str]],
+    max_retries: int,
+    retry_log: list[_RetryLog],
+) -> CriticDecision | None:
     for attempt in range(1, max_retries + 1):
         try:
-            client = _get_client()
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=_TEMPERATURE,
-                max_tokens=_MAX_TOKENS,
-                response_format={"type": "json_object"},
-            )
-
-            raw_text = response.choices[0].message.content or ""
+            raw_text = _call_provider(provider=provider, model=model, messages=messages)
             return parse_critic_response(raw_text)
 
-        except (openai.RateLimitError, openai.APIConnectionError) as exc:
+        except _transient_errors() as exc:
             waited = _RETRY_DELAY_BASE * (2 ** (attempt - 1))
-            retry_log.append(_RetryLog(attempt=attempt, waited=waited, error=str(exc)))
+            retry_log.append(_RetryLog(attempt=attempt, waited=waited, error=_safe_error(exc), provider=provider))
             if attempt < max_retries:
                 time.sleep(waited)
             continue
 
         except ParseError as exc:
-            # Bad JSON from model — worth one retry with a clarifying nudge
-            retry_log.append(_RetryLog(attempt=attempt, waited=0, error=f"ParseError: {exc}"))
+            retry_log.append(_RetryLog(attempt=attempt, waited=0, error=f"ParseError: {_safe_error(exc)}", provider=provider))
             if attempt < max_retries:
-                # Add a developer hint into the next attempt
                 messages.append({
                     "role": "developer",
                     "content": "Reminder: respond with JSON only. Do not add prose outside the JSON block.",
@@ -176,33 +233,94 @@ def critic(
             continue
 
         except Exception as exc:
-            # Unexpected error — log and bail (don't retry unknown exceptions)
-            retry_log.append(_RetryLog(attempt=attempt, waited=0, error=str(exc)))
+            # Missing/invalid credentials or provider-specific hard failures should
+            # not consume retries in auto mode. Record them and let the next
+            # provider try.
+            retry_log.append(_RetryLog(attempt=attempt, waited=0, error=_safe_error(exc), provider=provider))
             break
 
-    # All retries exhausted
-    _log_critic_failure(
-        user_message=user_message,
+    return None
+
+
+def _call_provider(*, provider: str, model: str, messages: list[dict[str, str]]) -> str:
+    if provider == "openai":
+        return _call_openai(model=model, messages=messages)
+    if provider == "minimax":
+        return _call_minimax(model=model, messages=messages)
+    raise ValueError(f"Unsupported Hermes Reflex critic provider: {provider!r}")
+
+
+def _call_openai(*, model: str, messages: list[dict[str, str]]) -> str:
+    client = _get_client()
+    response = client.chat.completions.create(
         model=model,
-        retry_log=retry_log,
+        messages=messages,
+        temperature=_TEMPERATURE,
+        max_tokens=_MAX_TOKENS,
+        response_format={"type": "json_object"},
     )
-    return CriticDecision.default_allow()
+    return response.choices[0].message.content or ""
+
+
+def _call_minimax(*, model: str, messages: list[dict[str, str]]) -> str:
+    client = _get_minimax_client()
+    system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system")
+    user_messages = [
+        {"role": "user", "content": m["content"]}
+        for m in messages
+        if m.get("role") != "system"
+    ]
+    response = client.messages.create(
+        model=model,
+        max_tokens=_MAX_TOKENS,
+        temperature=_TEMPERATURE,
+        system=system,
+        messages=user_messages,
+    )
+    return "".join(getattr(block, "text", "") for block in response.content)
+
+
+def _transient_errors() -> tuple[type[BaseException], ...]:
+    return (
+        openai.RateLimitError,
+        openai.APIConnectionError,
+        anthropic.RateLimitError,
+        anthropic.APIConnectionError,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Safe logging
+# ---------------------------------------------------------------------------
+
+def _safe_error(exc: BaseException) -> str:
+    """Return an exception string with credentials redacted."""
+    text = str(exc)
+    for env_key in ("OPENAI_API_KEY", "MINIMAX_API_KEY", "ANTHROPIC_API_KEY"):
+        value = os.environ.get(env_key) or ""
+        if value:
+            text = text.replace(value, "[REDACTED]")
+    # Redact common OpenAI-style key fragments that SDK errors sometimes echo.
+    text = re.sub(r"sk-[A-Za-z0-9_-]{4,}", "sk-[REDACTED]", text)
+    text = re.sub(r"mxp-[A-Za-z0-9_-]{4,}", "mxp-[REDACTED]", text)
+    return text
 
 
 def _log_critic_failure(
     user_message: str,
-    model: str,
+    provider_model: str,
     retry_log: list[_RetryLog],
 ) -> None:
     """Log critic failures for debugging (writes to stderr)."""
     import sys
 
     entries = [
-        f"[Hermes Reflex critic] FAILURE on '{user_message[:80]}' using {model}",
+        f"[Hermes Reflex critic] FAILURE on '{user_message[:80]}' using {provider_model}",
     ]
     for entry in retry_log:
         entries.append(
-            f"  Attempt {entry.attempt}: waited={entry.waited:.1f}s error={entry.error}"
+            f"  Provider {entry.provider} attempt {entry.attempt}: "
+            f"waited={entry.waited:.1f}s error={entry.error}"
         )
     entries.append("  → Returning default ALLOW decision.")
     sys.stderr.write("\n".join(entries) + "\n")

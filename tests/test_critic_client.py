@@ -6,6 +6,7 @@ a live API key or network access.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -43,6 +44,14 @@ MINIMAL_CONTEXT = {
     ],
     "recent_patterns": [{"name": "UI Avoidance", "status": "active"}],
 }
+
+
+@pytest.fixture(autouse=True)
+def _default_to_openai_provider(monkeypatch):
+    """Keep legacy OpenAI-client tests isolated from the runtime MiniMax env."""
+    import src.critic.client as client_module
+
+    monkeypatch.setattr(client_module, "_PROVIDER", "openai")
 
 
 def _mock_response(content: str) -> MagicMock:
@@ -208,6 +217,26 @@ def test_critic_returns_default_allow_when_no_api_key():
     assert isinstance(result, CriticDecision)
     assert result.mode == "ALLOW"
     assert "Critic unavailable" in result.reason
+
+
+def test_critic_falls_back_to_minimax_when_openai_client_fails():
+    """Auto provider mode should use MiniMax when OpenAI credentials are missing/invalid."""
+    raw = '{"mode": "CHALLENGE", "risk_type": "ui_avoidance", "confidence": 0.7, "severity": "medium"}'
+    import src.critic.client as client_module
+
+    mock_minimax = MagicMock()
+    mock_minimax.messages.create.return_value = SimpleNamespace(
+        content=[SimpleNamespace(text=raw)]
+    )
+
+    with patch.object(client_module, "_PROVIDER", "auto"), \
+         patch("src.critic.client._get_client", side_effect=EnvironmentError("OPENAI_API_KEY missing")), \
+         patch("src.critic.client._get_minimax_client", return_value=mock_minimax):
+        result = critic(**MINIMAL_CONTEXT, max_retries=1)
+
+    assert result.mode == "CHALLENGE"
+    assert result.risk_type == "ui_avoidance"
+    mock_minimax.messages.create.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

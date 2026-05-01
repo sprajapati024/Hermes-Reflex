@@ -18,6 +18,7 @@ The function NEVER raises — all errors are caught and degraded to ALLOW.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 from .schemas import ReflexResult
@@ -148,6 +149,7 @@ def process_reflex(
     # 4. Embedding retrieval
     # -----------------------------------------------------------------------
     retrieved_evidence: list[dict[str, Any]] = []
+    skip_retrieval = skip_retrieval or _env_truthy("HERMES_REFLEX_SKIP_RETRIEVAL")
     if not skip_retrieval:
         try:
             from ..embeddings.search import search_reflex_memory, retrieve_for_context
@@ -239,6 +241,29 @@ def process_reflex(
     # -----------------------------------------------------------------------
     # 7. Select mode
     # -----------------------------------------------------------------------
+    # Deterministic fallback: if the critic is unavailable or permissive but the
+    # fast rule engine found a concrete risk, do not fail open. The LLM critic
+    # may raise, time out, or return its default ALLOW when credentials are
+    # missing; rules and contract checks are local and should still enforce.
+    rule_mode = str(rule_result.get("recommended_mode") or "ALLOW")
+    rule_flags = list(rule_result.get("risk_flags") or [])
+    if critic_mode == "ALLOW" and rule_mode not in ("", "ALLOW") and rule_flags:
+        critic_mode = rule_mode
+        critic_risk_type = str(rule_flags[0])
+        critic_confidence = max(
+            critic_confidence,
+            float(rule_result.get("confidence", 0.65) or 0.65),
+        )
+        critic_severity = "high" if rule_mode == "REQUIRE_OVERRIDE" else "medium"
+        matched_terms = ", ".join(str(t) for t in rule_result.get("matched_terms", []) if t)
+        critic_reason = (
+            f"Local Reflex rule matched {critic_risk_type}"
+            + (f" via {matched_terms}." if matched_terms else ".")
+            + (f" {critic_reason}" if critic_reason else "")
+        )
+        critic_action = critic_action or "Pause and check alignment before proceeding."
+        allow_override = rule_mode != "REQUIRE_OVERRIDE"
+
     # Override: if contract is directly violated, REQUIRE_OVERRIDE takes precedence
     if contract_conflict.get("conflict") and contract_conflict.get("recommended_mode") == "REQUIRE_OVERRIDE":
         critic_mode = "REQUIRE_OVERRIDE"
@@ -327,6 +352,10 @@ def process_reflex(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _build_allow_result(
     reason: str,

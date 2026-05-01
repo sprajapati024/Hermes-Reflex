@@ -15,6 +15,12 @@ from src.core.schemas import ReflexResult
 from src.core.response_modes import get_hermes_instruction, MODE_INSTRUCTIONS
 
 
+def _mock_to_dict(data: dict) -> MagicMock:
+    obj = MagicMock()
+    obj.to_dict.return_value = data
+    return obj
+
+
 # ---------------------------------------------------------------------------
 # _is_reflex_command
 # ---------------------------------------------------------------------------
@@ -131,14 +137,16 @@ def test_process_reflex_runs_full_pipeline_with_mocks():
 
         mock_paused.return_value = False
 
-        mock_contract.return_value = MagicMock(to_dict={"constraints": {}})
+        mock_contract.return_value = _mock_to_dict({"constraints": {}})
 
-        mock_rules.return_value = MagicMock(to_dict={
+        mock_rule_result = MagicMock()
+        mock_rule_result.to_dict.return_value = {
             "risk_flags": ["ui_avoidance"],
             "confidence": 0.78,
             "recommended_mode": "CHALLENGE",
             "matched_terms": ["dashboard"],
-        })
+        }
+        mock_rules.return_value = mock_rule_result
 
         mock_search.return_value = [
             {"id": "exp_no_dashboard", "type": "experiment", "summary": "No Dashboard Build", "score": 0.92, "title": "No Dashboard Build"}
@@ -187,8 +195,8 @@ def test_process_reflex_contract_conflict_overrides_critic():
          patch("src.gbrain.storage.write_signal") as mock_sig:
 
         mock_paused.return_value = False
-        mock_rules.return_value = MagicMock(to_dict={"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
-        mock_contract.return_value = MagicMock(to_dict={"constraints": {}})
+        mock_rules.return_value = _mock_to_dict({"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
+        mock_contract.return_value = _mock_to_dict({"constraints": {}})
         mock_search.return_value = []
         mock_patterns.return_value = []
         mock_experiments.return_value = []
@@ -248,8 +256,8 @@ def test_process_reflex_graceful_degradation_on_critic_failure():
          patch("src.critic.critic") as mock_critic:
 
         mock_paused.return_value = False
-        mock_rules.return_value = MagicMock(to_dict={"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
-        mock_contract.return_value = MagicMock(to_dict={"constraints": {}})
+        mock_rules.return_value = _mock_to_dict({"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
+        mock_contract.return_value = _mock_to_dict({"constraints": {}})
         mock_search.return_value = []
         mock_patterns.return_value = []
         mock_exps.return_value = []
@@ -270,8 +278,8 @@ def test_process_reflex_skip_retrieval_flag():
          patch("src.gbrain.storage.write_decision") as mock_dec:
 
         mock_paused.return_value = False
-        mock_rules.return_value = MagicMock(to_dict={"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
-        mock_contract.return_value = MagicMock(to_dict={"constraints": {}})
+        mock_rules.return_value = _mock_to_dict({"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
+        mock_contract.return_value = _mock_to_dict({"constraints": {}})
 
         mock_decision = MagicMock()
         mock_decision.mode = "ALLOW"
@@ -298,14 +306,17 @@ def test_process_reflex_skip_critic_flag():
          patch("src.critic.critic") as mock_critic:
 
         mock_paused.return_value = False
-        mock_rules.return_value = MagicMock(to_dict={"risk_flags": ["ui_avoidance"], "confidence": 0.78, "recommended_mode": "CHALLENGE", "matched_terms": ["dashboard"]})
-        mock_contract.return_value = MagicMock(to_dict={"constraints": {}})
+        mock_rule_result = MagicMock()
+        mock_rule_result.to_dict.return_value = {"risk_flags": ["ui_avoidance"], "confidence": 0.78, "recommended_mode": "CHALLENGE", "matched_terms": ["dashboard"]}
+        mock_rules.return_value = mock_rule_result
+        mock_contract.return_value = _mock_to_dict({"constraints": {}})
 
         result = process_reflex("Let's add a dashboard", skip_critic=True)
 
     mock_critic.assert_not_called()
-    # skip_critic doesn't run critic, so we get ALLOW (rules aren't directly used as mode)
-    assert result.mode == "ALLOW"
+    # skip_critic bypasses the LLM, but local rules still enforce so Reflex does not fail open.
+    assert result.mode == "CHALLENGE"
+    assert result.risk_type == "ui_avoidance"
 
 
 def test_process_reflex_logs_decision_on_challenge():
@@ -321,8 +332,10 @@ def test_process_reflex_logs_decision_on_challenge():
          patch("src.gbrain.storage.write_signal") as mock_write_sig:
 
         mock_paused.return_value = False
-        mock_rules.return_value = MagicMock(to_dict={"risk_flags": ["ui_avoidance"], "confidence": 0.78, "recommended_mode": "CHALLENGE", "matched_terms": ["dashboard"]})
-        mock_contract.return_value = MagicMock(to_dict={"constraints": {}})
+        mock_rule_result = MagicMock()
+        mock_rule_result.to_dict.return_value = {"risk_flags": ["ui_avoidance"], "confidence": 0.78, "recommended_mode": "CHALLENGE", "matched_terms": ["dashboard"]}
+        mock_rules.return_value = mock_rule_result
+        mock_contract.return_value = _mock_to_dict({"constraints": {}})
         mock_search.return_value = []
         mock_patterns.return_value = []
         mock_exps.return_value = []
@@ -358,8 +371,8 @@ def test_process_reflex_no_signal_on_allow():
          patch("src.gbrain.storage.write_signal") as mock_write_sig:
 
         mock_paused.return_value = False
-        mock_rules.return_value = MagicMock(to_dict={"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
-        mock_contract.return_value = MagicMock(to_dict={"constraints": {}})
+        mock_rules.return_value = _mock_to_dict({"risk_flags": [], "confidence": 0.0, "recommended_mode": "ALLOW", "matched_terms": []})
+        mock_contract.return_value = _mock_to_dict({"constraints": {}})
         mock_search.return_value = []
         mock_patterns.return_value = []
         mock_exps.return_value = []
@@ -380,6 +393,50 @@ def test_process_reflex_no_signal_on_allow():
     assert result.mode == "ALLOW"
     mock_write_dec.assert_called_once()
     mock_write_sig.assert_not_called()
+
+
+def test_process_reflex_local_rules_enforce_when_critic_allows():
+    """If the LLM critic fails open/permits a rule hit, local rules still challenge."""
+    with patch("src.core.pause.is_paused") as mock_paused, \
+         patch("src.core.rule_engine.evaluate_rules") as mock_rules, \
+         patch("src.core.operating_contract.load_contract") as mock_contract, \
+         patch("src.core.operating_contract.check_contract_conflict") as mock_conflict, \
+         patch("src.embeddings.search.search_reflex_memory") as mock_search, \
+         patch("src.gbrain.storage.read_active_patterns") as mock_patterns, \
+         patch("src.gbrain.storage.read_active_experiments") as mock_exps, \
+         patch("src.critic.critic") as mock_critic:
+
+        mock_paused.return_value = False
+        mock_rule_result = MagicMock()
+        mock_rule_result.to_dict.return_value = {
+            "risk_flags": ["ui_avoidance"],
+            "confidence": 0.78,
+            "recommended_mode": "CHALLENGE",
+            "matched_terms": ["dashboard"],
+        }
+        mock_rules.return_value = mock_rule_result
+        mock_contract.return_value = _mock_to_dict({"constraints": {}})
+        mock_conflict.return_value = MagicMock(to_dict=lambda: {"conflict": False})
+        mock_search.return_value = []
+        mock_patterns.return_value = []
+        mock_exps.return_value = []
+
+        mock_decision = MagicMock()
+        mock_decision.mode = "ALLOW"
+        mock_decision.risk_type = "none"
+        mock_decision.confidence = 0.0
+        mock_decision.severity = "low"
+        mock_decision.reason = "Critic unavailable — defaulting to ALLOW."
+        mock_decision.recommended_action = ""
+        mock_decision.allow_override = True
+        mock_decision.to_dict.return_value = {"mode": "ALLOW", "risk_type": "none"}
+        mock_critic.return_value = mock_decision
+
+        result = process_reflex("Should I build a dashboard?")
+
+    assert result.mode == "CHALLENGE"
+    assert result.risk_type == "ui_avoidance"
+    assert result.confidence == 0.78
 
 
 # ---------------------------------------------------------------------------
