@@ -148,7 +148,8 @@ def test_risky_dashboard_request_blocks():
 
 def test_risky_path_calls_retrieval():
     """Risky messages must trigger the embedding retrieval step."""
-    with patch("src.core.pause.is_paused", return_value=False), \
+    with patch.dict("os.environ", {"HERMES_REFLEX_SKIP_RETRIEVAL": "false"}), \
+         patch("src.core.pause.is_paused", return_value=False), \
          patch("src.core.rule_engine.evaluate_rules", return_value=_risky_rule_result()), \
          patch("src.core.operating_contract.load_contract", return_value=MagicMock(to_dict=lambda: {"constraints": {}})), \
          patch("src.core.operating_contract.check_contract_conflict", return_value=_no_conflict()), \
