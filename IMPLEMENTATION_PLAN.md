@@ -826,7 +826,9 @@ No firing for 30 days or user retires it.
 
 ---
 
-## 13. Phase 9 - Weekly Review
+## 13. Phase 9 - Weekly Review ✓
+
+**Status:** Complete — commit `feat(phase9): Phase 9 — Weekly Review Generator`
 
 ### Goal
 
@@ -845,7 +847,7 @@ Generate a useful weekly review from check-ins, decisions, patterns, experiments
 
 ### Required Output Sections
 
-```txt
+```
 What shipped
 What stalled
 Patterns fired
@@ -864,11 +866,9 @@ One thing to stop doing
 
 ---
 
-## 14. Phase 10 - Skillify Candidates
+## 14. Phase 10 - Skillify Candidates ✓
 
-### Goal
-
-Convert repeated useful interventions into reusable skills.
+**Status:** Complete — built in this session
 
 ### Tasks
 
@@ -881,7 +881,7 @@ Convert repeated useful interventions into reusable skills.
 
 Create skillify candidate when:
 
-```txt
+```
 pattern fires >= 5 times
 and intervention accepted/useful >= 2 times
 and user has not retired pattern
@@ -889,7 +889,7 @@ and user has not retired pattern
 
 ### Candidate Path
 
-```txt
+```
 gbrain/reflex/skillify-candidates/<skill-name>.md
 ```
 
