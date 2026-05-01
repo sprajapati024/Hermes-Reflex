@@ -427,6 +427,10 @@ def write_operating_contract(
         "id": "current-operating-contract",
         "status": "active",
         "type": "contract",
+        "active_goal": active_goal,
+        "constraints": constraints,
+        "reflex_authority": reflex_authority,
+        "override_policy": override_policy,
     }
     body = "# Current Operating Contract\n\n"
     body += f"## Active Goal\n{active_goal}\n\n"
