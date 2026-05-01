@@ -258,6 +258,32 @@ def _check_contract_conflict(text: str, context: dict, result: RuleResult) -> No
     severity = SEVERITY_HIGH
     response = _SEVERITY_RESPONSE[severity]
 
+    # The storage-backed OperatingContract returns constraints as a simple
+    # list[str] (e.g. ["No dashboard", "No frontend"]). Older tests and
+    # hand-authored contexts may provide the richer dict form:
+    # {"constraint-id": {"conflict_patterns": [...]}}. Support both shapes
+    # here so the middleware can pass load_contract().to_dict() directly.
+    if isinstance(constraints, list):
+        for constraint in constraints:
+            if not isinstance(constraint, str):
+                continue
+            patterns = _patterns_from_constraint_text(constraint)
+            for pattern in patterns:
+                try:
+                    if re.search(pattern, text, re.IGNORECASE):
+                        result.risk_flags.append("contract_conflict")
+                        result.matched_rules.append(RuleMatch(
+                            risk_type="contract_conflict",
+                            matched_term=f"[{constraint}] {pattern}",
+                            severity=severity,
+                            response_mode=response,
+                        ))
+                        result.recommended_mode = _resolve_mode(result.matched_rules)
+                        return
+                except re.error:
+                    continue
+        return
+
     # Check each constraint's conflict patterns against the message
     for constraint_id, constraint in constraints.items():
         patterns = constraint.get("conflict_patterns", [])
@@ -276,6 +302,39 @@ def _check_contract_conflict(text: str, context: dict, result: RuleResult) -> No
                     return  # one contract conflict is enough
             except re.error:
                 pass  # skip invalid patterns
+
+
+def _patterns_from_constraint_text(constraint: str) -> list[str]:
+    """Return conservative conflict regexes for a plain-text constraint.
+
+    Storage-backed contracts currently store constraints as human-readable
+    strings. For "No X" constraints, the conflicting user message usually
+    mentions X ("dashboard"), not the full phrase ("No dashboard").
+    """
+    clean = constraint.strip()
+    if not clean:
+        return []
+
+    patterns = [re.escape(clean)]
+
+    lower = clean.lower()
+    if lower.startswith("no "):
+        forbidden = clean[3:].strip()
+        if forbidden:
+            patterns.append(rf"\b{re.escape(forbidden)}\b")
+
+    # Common Hermes Reflex operating-contract constraints that are phrased
+    # as policy rather than a simple "No X" ban.
+    if lower == "telegram commands only":
+        patterns.extend([
+            r"\bweb\s*interface\b",
+            r"\bweb\s*ui\b",
+            r"\bbrowser\s*plugin\b",
+            r"\bbrowser\s*extension\b",
+            r"\bchrome\s*extension\b",
+        ])
+
+    return patterns
 
 
 def _check_experiment_conflict(text: str, context: dict, result: RuleResult) -> None:

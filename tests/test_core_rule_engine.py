@@ -156,6 +156,26 @@ def test_contract_conflict_match():
     assert result.recommended_mode == "REQUIRE_OVERRIDE"
 
 
+def test_contract_conflict_accepts_storage_backed_constraint_list():
+    contract = {
+        "constraints": ["No dashboard", "No frontend", "Telegram commands only"]
+    }
+    result = RuleResult()
+    _check_contract_conflict("Let's build a dashboard", {"operating_contract": contract}, result)
+    assert "contract_conflict" in result.risk_flags
+    assert result.recommended_mode == "REQUIRE_OVERRIDE"
+
+
+def test_contract_conflict_constraint_list_detects_policy_phrasing():
+    contract = {
+        "constraints": ["Telegram commands only"]
+    }
+    result = RuleResult()
+    _check_contract_conflict("Let's add a web interface", {"operating_contract": contract}, result)
+    assert "contract_conflict" in result.risk_flags
+    assert result.recommended_mode == "REQUIRE_OVERRIDE"
+
+
 def test_contract_conflict_invalid_regex_skipped():
     contract = {
         "constraints": {
