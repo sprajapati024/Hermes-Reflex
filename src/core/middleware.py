@@ -107,6 +107,21 @@ def log_decision_deferred(fn) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Shared critic executor
+# ---------------------------------------------------------------------------
+
+# A single bounded executor is reused across all critic calls.  Using a
+# shared pool avoids creating a new ThreadPoolExecutor per request and
+# prevents zombie thread accumulation when timeouts occur — the pool cap
+# (max_workers=2) means at most two threads ever exist regardless of how
+# many timeouts fire in a burst.
+_critic_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="reflex-critic",
+)
+
+
+# ---------------------------------------------------------------------------
 # Decision cache
 # ---------------------------------------------------------------------------
 
@@ -160,16 +175,16 @@ def _call_critic_timed(
     recent_patterns: list,
     timeout_ms: int,
 ):
-    """Call the critic LLM with a hard timeout.
+    """Call the critic LLM with a hard timeout using the shared executor.
 
-    Returns the CriticDecision on success, None on timeout or failure.
-    On timeout, the background thread is abandoned (it will finish eventually)
-    rather than waited on, so this function returns within timeout_ms + overhead.
+    Submits work to _critic_executor (max_workers=2) so no new executor object
+    is created per call.  On timeout, future.result() returns promptly and the
+    underlying thread continues in the pool — but the pool cap prevents unbounded
+    accumulation even under sustained timeout bursts.
     """
     from ..critic import critic
 
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(
+    future = _critic_executor.submit(
         critic,
         user_message=user_message,
         rule_result=rule_result,
@@ -178,9 +193,6 @@ def _call_critic_timed(
         retrieved_evidence=retrieved_evidence,
         recent_patterns=recent_patterns,
     )
-    # Shut down the executor without waiting so we can enforce the timeout.
-    # The submitted thread may still be running after shutdown(wait=False).
-    executor.shutdown(wait=False)
     try:
         return future.result(timeout=timeout_ms / 1000.0)
     except concurrent.futures.TimeoutError:

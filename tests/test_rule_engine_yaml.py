@@ -134,6 +134,58 @@ def test_load_yaml_rules_high_severity(tmp_path):
     assert rules["high_rule"]["severity"] == "HIGH"
 
 
+def test_load_yaml_rules_stores_mode_override(tmp_path):
+    """mode: NOTE in YAML must be stored as mode_override, not silently dropped."""
+    (tmp_path / "note_rule.yaml").write_text(textwrap.dedent("""\
+        id: note_rule
+        severity: medium
+        mode: NOTE
+        enabled: true
+        terms:
+          - minor concern
+    """))
+    rules = load_yaml_rules(rules_dir=str(tmp_path))
+    assert rules["note_rule"]["mode_override"] == "NOTE"
+
+
+def test_yaml_mode_note_fires_correctly(tmp_path):
+    """evaluate_rules must produce NOTE mode when YAML rule specifies mode: NOTE."""
+    (tmp_path / "note_rule.yaml").write_text(textwrap.dedent("""\
+        id: note_rule
+        severity: medium
+        mode: NOTE
+        enabled: true
+        terms:
+          - minor concern
+    """))
+
+    import src.core.rule_engine as re_mod
+    original_active = re_mod._ACTIVE_RULES.copy()
+    try:
+        yaml_rules = load_yaml_rules(rules_dir=str(tmp_path))
+        re_mod._ACTIVE_RULES.update(yaml_rules)
+
+        result = evaluate_rules("Just a minor concern here.")
+        assert "note_rule" in result.risk_flags
+        assert result.recommended_mode == "NOTE"
+    finally:
+        re_mod._ACTIVE_RULES.clear()
+        re_mod._ACTIVE_RULES.update(original_active)
+
+
+def test_yaml_mode_none_falls_back_to_severity(tmp_path):
+    """When mode is absent, response mode is derived from severity as before."""
+    (tmp_path / "no_mode_rule.yaml").write_text(textwrap.dedent("""\
+        id: no_mode_rule
+        severity: high
+        enabled: true
+        terms:
+          - severe thing
+    """))
+    rules = load_yaml_rules(rules_dir=str(tmp_path))
+    assert rules["no_mode_rule"]["mode_override"] is None
+
+
 # ---------------------------------------------------------------------------
 # Integration — YAML rules fire in evaluate_rules()
 # ---------------------------------------------------------------------------

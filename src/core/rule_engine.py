@@ -256,11 +256,18 @@ def load_yaml_rules(rules_dir: Optional[str] = None) -> dict[str, dict]:
             terms = [str(t) for t in (rule.get("terms") or [])]
             compiled = [c for t in terms if (c := _compile_yaml_term(t)) is not None]
 
+            # Explicit mode override: lets YAML rules specify NOTE, CLARIFY,
+            # etc. without being constrained to the HIGH→REQUIRE_OVERRIDE /
+            # MEDIUM→CHALLENGE severity mapping.
+            mode_raw = str(rule.get("mode") or "").strip().upper()
+            mode_override: Optional[str] = mode_raw if mode_raw else None
+
             loaded[rule_id] = {
                 "severity": severity,
                 "terms": terms,
                 "_compiled": compiled,
                 "_from_yaml": True,
+                "mode_override": mode_override,
                 "requires_evidence": bool(rule.get("requires_evidence", False)),
                 "cooldown_hours": int(rule.get("cooldown_hours", 0)),
             }
@@ -335,7 +342,9 @@ def evaluate_rules(
 def _check_keyword_rules(risk_type: str, text: str, result: RuleResult) -> None:
     config = _ACTIVE_RULES[risk_type]
     severity = config["severity"]
-    response = _SEVERITY_RESPONSE[severity]
+    # YAML rules may carry an explicit mode_override (e.g. NOTE, CLARIFY).
+    # Fall back to the severity→mode mapping for built-in rules.
+    response = config.get("mode_override") or _SEVERITY_RESPONSE[severity]
 
     for compiled in config.get("_compiled", []):
         m = compiled.search(text)

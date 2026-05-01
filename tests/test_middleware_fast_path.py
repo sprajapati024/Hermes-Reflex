@@ -193,27 +193,19 @@ def test_critic_timeout_uses_rule_fallback():
 
 
 def test_critic_timeout_does_not_block():
-    """Verify that a slow critic is cut off by the timeout, not waited on."""
+    """Verify that a slow critic is cut off by the timeout, not waited on.
+
+    Uses the shared _critic_executor directly via patching src.critic.critic
+    (the function the executor submits).  The shared executor means no new
+    ThreadPoolExecutor is created per call, and future.result(timeout=...) on
+    the shared pool's future returns promptly on timeout.
+    """
     import threading
-    from src.core import middleware as mw
 
     slow_event = threading.Event()
 
     def _slow_critic(**kwargs):
-        slow_event.wait(timeout=10)  # would block for 10s without timeout
-
-    # Patch _call_critic_timed directly so we control what it calls,
-    # and verify the middleware's timeout plumbing abandons it promptly.
-    def _slow_timed(**kwargs):
-        import concurrent.futures
-        timeout_ms = kwargs.get("timeout_ms", 700)
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(_slow_critic)
-        executor.shutdown(wait=False)
-        try:
-            return future.result(timeout=timeout_ms / 1000.0)
-        except concurrent.futures.TimeoutError:
-            return None
+        slow_event.wait(timeout=10)  # blocks until we set the event
 
     with patch("src.core.pause.is_paused", return_value=False), \
          patch("src.core.rule_engine.evaluate_rules", return_value=_risky_rule_result()), \
@@ -224,18 +216,18 @@ def test_critic_timeout_does_not_block():
          patch("src.gbrain.storage.read_active_patterns", return_value=[]), \
          patch("src.gbrain.storage.write_decision"), \
          patch("src.gbrain.storage.write_signal"), \
-         patch.dict("os.environ", {"HERMES_REFLEX_CRITIC_TIMEOUT_MS": "100"}), \
-         patch.object(mw, "_call_critic_timed", side_effect=_slow_timed):
+         patch.dict("os.environ", {"HERMES_REFLEX_CRITIC_TIMEOUT_MS": "150"}), \
+         patch("src.critic.critic", side_effect=_slow_critic):
 
         start = time.monotonic()
         result = process_reflex("Let's add a SaaS layer.")
         elapsed_ms = (time.monotonic() - start) * 1000
 
-    slow_event.set()  # unblock background thread
+    slow_event.set()  # release the background thread
 
-    # Should complete well within 2 seconds even though the critic would take 10s
+    # Should finish well within 2 s even though the critic sleeps for 10 s
     assert elapsed_ms < 2000, f"Took {elapsed_ms:.0f} ms — critic timeout not enforced"
-    # Rule fallback enforced because critic returned None
+    # Rule fallback must still enforce a non-ALLOW mode
     assert result.mode in ("CHALLENGE", "REQUIRE_OVERRIDE")
 
 
