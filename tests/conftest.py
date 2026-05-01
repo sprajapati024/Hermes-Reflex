@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
+
+# Ensure project root is on sys.path so `from src import ...` imports work
+# regardless of how pytest was invoked.
+_ROOT = Path(__file__).parent.parent.resolve()
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 
 @pytest.fixture(autouse=True)
