@@ -555,7 +555,7 @@ Return:
 
 ## 9. Phase 5 - Cheap Critic Layer ✓
 
-**Status:** Complete — built in this session
+**Status:** Complete — commit `c03bd90`
 
 ### Goal
 
@@ -619,7 +619,7 @@ Pass only compact context:
 
 ## 10. Phase 6 - Reflex Middleware ✓
 
-**Status:** Complete — built in this session
+**Status:** Complete — commit `6f9a3a9`
 
 ### Goal
 
@@ -706,7 +706,7 @@ Respond normally. Do not mention Reflex.
 
 ## 11. Phase 7 - Telegram Commands ✓
 
-**Status:** Complete — built in this session
+**Status:** Complete — commit `2f0034c`
 
 ### Goal
 
@@ -778,7 +778,7 @@ Continue after challenge and log override.
 ---
 
 ## 12. Phase 8 - Pattern Lifecycle ✓
-**Status:** Complete — commit `a1b2c3d` (Phase 8)
+**Status:** Complete — commit `c2c415e`
 
 ### Goal
 
@@ -828,7 +828,7 @@ No firing for 30 days or user retires it.
 
 ## 13. Phase 9 - Weekly Review ✓
 
-**Status:** Complete — commit `feat(phase9): Phase 9 — Weekly Review Generator`
+**Status:** Complete — commit `02983ae`
 
 ### Goal
 
@@ -868,7 +868,7 @@ One thing to stop doing
 
 ## 14. Phase 10 - Skillify Candidates ✓
 
-**Status:** Complete — built in this session
+**Status:** Complete — commit `02983ae`
 
 ### Tasks
 
