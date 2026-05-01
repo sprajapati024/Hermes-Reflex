@@ -165,8 +165,9 @@ class TestHandlePatterns:
 
         result = run_patterns_list()
         assert "UI Avoidance" in result
-        assert "5 signals" in result
-        assert "Finish patterns first" in result
+        assert "sig:5" in result  # new compact format: (sig:N, conf:X%)
+        # Intervention is shown in detail view, not list view
+        assert "CRU:" in result  # command reference footer present
 
 
 class TestHandleReflex:

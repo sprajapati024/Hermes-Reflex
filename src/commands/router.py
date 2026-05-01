@@ -26,7 +26,7 @@ from typing import Optional
 
 from .checkin import run_checkin, format_checkin_summary
 from .experiment import run_experiment_create, run_experiment_list
-from .patterns import run_patterns_list, run_patterns_detail
+from .patterns import run_patterns_command
 from .reflex import run_reflex_query
 from .review import run_review
 from .override import run_override, run_override_status
@@ -290,12 +290,8 @@ def _handle_experiment(text: str) -> str:
 
 
 def _handle_patterns(text: str) -> str:
-    """Handle /patterns or /patterns <id>."""
-    match = re.match(r"^/patterns\s+(.+)$", text)
-    if match:
-        pattern_id = match.group(1).strip()
-        return run_patterns_detail(pattern_id)
-    return run_patterns_list()
+    """Handle /patterns or /patterns <subcommand>."""
+    return run_patterns_command(text)
 
 
 def _handle_reflex(text: str) -> str:
