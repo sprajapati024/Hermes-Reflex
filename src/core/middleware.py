@@ -36,6 +36,7 @@ New env vars:
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import hashlib
 import logging
 import os
@@ -381,8 +382,20 @@ def process_reflex(
     if cached is not None:
         if verbose:
             _trace.append(TraceEntry("cache_check", "✅ Cache hit", "Returning cached decision", _t(_stage_start)))
-            cached.verbose = True
-            cached.trace = list(_trace)
+            cached_with_trace = ReflexResult(
+                mode=cached.mode,
+                risk_type=cached.risk_type,
+                confidence=cached.confidence,
+                severity=cached.severity,
+                hermes_instruction=cached.hermes_instruction,
+                evidence=copy.deepcopy(cached.evidence),
+                decision_id=cached.decision_id,
+                mode_raw=copy.deepcopy(cached.mode_raw),
+                verbose=True,
+                trace=list(_trace),
+            )
+            log.debug("[Reflex] decision cache hit for message fingerprint")
+            return cached_with_trace
         log.debug("[Reflex] decision cache hit for message fingerprint")
         return cached
     if verbose:
@@ -642,7 +655,19 @@ def process_reflex(
         trace=_trace if verbose else [],
     )
 
-    _set_cached(cache_key, final_result, cache_ttl)
+    cache_result = ReflexResult(
+        mode=final_result.mode,
+        risk_type=final_result.risk_type,
+        confidence=final_result.confidence,
+        severity=final_result.severity,
+        hermes_instruction=final_result.hermes_instruction,
+        evidence=copy.deepcopy(final_result.evidence),
+        decision_id=final_result.decision_id,
+        mode_raw=copy.deepcopy(final_result.mode_raw),
+        verbose=False,
+        trace=[],
+    )
+    _set_cached(cache_key, cache_result, cache_ttl)
 
     return final_result
 

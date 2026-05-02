@@ -114,6 +114,11 @@ class TestHandleExperiment:
             result = _handle_experiment("/experiment list")
             assert "active experiments" in result.lower() or "No active" in result
 
+    def test_experiments_alias(self, tmp_path):
+        with patch("src.gbrain.storage.read_active_experiments", return_value=[]):
+            result = _handle_experiment("/experiments")
+            assert "active experiments" in result.lower() or "No active" in result
+
     @patch("src.commands.experiment.write_experiment")
     def test_experiment_create(self, mock_write):
         mock_write.return_value = Path("/fake/experiments/test-exp.md")
@@ -229,36 +234,45 @@ class TestVerboseRouter:
 
     def test_reflex_verbose_on(self):
         import src.commands.router as router_mod
-        router_mod._verbose_enabled = False
-        result = _handle_reflex("/reflex verbose on")
+        router_mod._verbose_enabled_by_chat.clear()
+        result = _handle_reflex("/reflex verbose on", chat_id=101)
         assert "on" in result.lower()
-        assert router_mod._verbose_enabled is True
+        assert router_mod._is_verbose_enabled(101) is True
 
     def test_reflex_verbose_off(self):
         import src.commands.router as router_mod
-        router_mod._verbose_enabled = True
-        result = _handle_reflex("/reflex verbose off")
+        router_mod._verbose_enabled_by_chat.clear()
+        router_mod._set_verbose_enabled(101, True)
+        result = _handle_reflex("/reflex verbose off", chat_id=101)
         assert "off" in result.lower()
-        assert router_mod._verbose_enabled is False
+        assert router_mod._is_verbose_enabled(101) is False
 
     def test_reflex_verbose_status_when_on(self):
         import src.commands.router as router_mod
-        router_mod._verbose_enabled = True
-        result = _handle_reflex("/reflex verbose")
+        router_mod._verbose_enabled_by_chat.clear()
+        router_mod._set_verbose_enabled(101, True)
+        result = _handle_reflex("/reflex verbose", chat_id=101)
         assert "on" in result.lower()
 
     def test_reflex_verbose_status_when_off(self):
         import src.commands.router as router_mod
-        router_mod._verbose_enabled = False
-        result = _handle_reflex("/reflex verbose")
+        router_mod._verbose_enabled_by_chat.clear()
+        result = _handle_reflex("/reflex verbose", chat_id=101)
         assert "off" in result.lower()
+
+    def test_reflex_verbose_is_scoped_per_chat(self):
+        import src.commands.router as router_mod
+        router_mod._verbose_enabled_by_chat.clear()
+        _handle_reflex("/reflex verbose on", chat_id=101)
+        assert router_mod._is_verbose_enabled(101) is True
+        assert router_mod._is_verbose_enabled(202) is False
 
     @patch("src.commands.reflex.process_reflex")
     def test_reflex_verbose_prefix_one_shot(self, mock_process):
         from src.core.schemas import ReflexResult
         from src.core.trace import TraceEntry
         import src.commands.router as router_mod
-        router_mod._verbose_enabled = False  # global is off
+        router_mod._verbose_enabled_by_chat.clear()
 
         mock_process.return_value = ReflexResult(
             mode="ALLOW",
@@ -270,18 +284,19 @@ class TestVerboseRouter:
             verbose=True,
             trace=[TraceEntry("bypass_check", "✅ Pass", "not a command", 0.5)],
         )
-        _handle_reflex("/reflex verbose: Should I deploy to prod?")
+        _handle_reflex("/reflex verbose: Should I deploy to prod?", chat_id=101)
 
         _, kwargs = mock_process.call_args
         assert kwargs.get("verbose") is True
-        # global toggle stays off
-        assert router_mod._verbose_enabled is False
+        # one-shot should not persist chat toggle
+        assert router_mod._is_verbose_enabled(101) is False
 
     @patch("src.commands.reflex.process_reflex")
     def test_reflex_query_passes_verbose_enabled(self, mock_process):
         from src.core.schemas import ReflexResult
         import src.commands.router as router_mod
-        router_mod._verbose_enabled = True
+        router_mod._verbose_enabled_by_chat.clear()
+        router_mod._set_verbose_enabled(101, True)
 
         mock_process.return_value = ReflexResult(
             mode="ALLOW",
@@ -291,7 +306,7 @@ class TestVerboseRouter:
             hermes_instruction="",
             evidence=[],
         )
-        _handle_reflex("/reflex Can I push this?")
+        _handle_reflex("/reflex Can I push this?", chat_id=101)
 
         _, kwargs = mock_process.call_args
         assert kwargs.get("verbose") is True

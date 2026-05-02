@@ -33,8 +33,8 @@ def clear_reflex_decision_cache():
 
 @pytest.fixture(autouse=True)
 def reset_verbose_state():
-    """Reset the module-level verbose toggle in router between tests."""
+    """Reset per-chat verbose toggle state in router between tests."""
     import src.commands.router as router_mod
-    router_mod._verbose_enabled = False
+    router_mod._verbose_enabled_by_chat.clear()
     yield
-    router_mod._verbose_enabled = False
+    router_mod._verbose_enabled_by_chat.clear()
