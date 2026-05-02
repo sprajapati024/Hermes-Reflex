@@ -136,7 +136,8 @@ The critic is a cheap JSON-only model. It judges, it doesn't write. The main Her
 ```
 /checkin              — Daily standup (energy, friction, focus, shipped)
 /experiment create    — Create a structured experiment
-/experiments          — List active/planned experiments
+/experiment list      — List active/planned experiments
+/experiments          — Alias for /experiment list
 /patterns             — View active/watching patterns with evidence
 /reflex <question>   — Run the reflex pipeline manually
 /review               — Generate weekly review

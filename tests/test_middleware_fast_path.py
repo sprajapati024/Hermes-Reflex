@@ -284,6 +284,53 @@ def test_decision_cache_returns_cached_result():
     _decision_cache.clear()
 
 
+def test_decision_cache_does_not_leak_verbose_state_between_calls():
+    """Verbose traces must remain per-request and never pollute cached baseline results."""
+    _decision_cache.clear()
+
+    with patch("src.core.pause.is_paused", return_value=False), \
+         patch("src.core.rule_engine.evaluate_rules", return_value=_risky_rule_result()), \
+         patch("src.core.operating_contract.load_contract", return_value=MagicMock(to_dict=lambda: {"constraints": {}})), \
+         patch("src.core.operating_contract.check_contract_conflict", return_value=_no_conflict()), \
+         patch("src.gbrain.storage.read_active_experiments", return_value=[]), \
+         patch("src.embeddings.search.search_reflex_memory", return_value=[]), \
+         patch("src.gbrain.storage.read_active_patterns", return_value=[]), \
+         patch("src.critic.critic") as mock_critic, \
+         patch("src.gbrain.storage.write_decision"), \
+         patch("src.gbrain.storage.write_signal"):
+
+        dec = MagicMock()
+        dec.mode = "CHALLENGE"
+        dec.risk_type = "ui_avoidance"
+        dec.confidence = 0.8
+        dec.severity = "medium"
+        dec.reason = "rule match"
+        dec.recommended_action = ""
+        dec.allow_override = True
+        dec.to_dict.return_value = {"mode": "CHALLENGE"}
+        mock_critic.return_value = dec
+
+        # First call (verbose) computes and caches decision
+        result_verbose = process_reflex("Add a dashboard please.", skip_retrieval=True, verbose=True)
+        assert result_verbose.verbose is True
+        assert len(result_verbose.trace) > 0
+
+        # Second call (non-verbose) should hit cache but remain non-verbose
+        result_plain = process_reflex("Add a dashboard please.", skip_retrieval=True, verbose=False)
+        assert result_plain.verbose is False
+        assert result_plain.trace == []
+
+        # Third call (verbose) should still return trace without mutating cache baseline
+        result_verbose_again = process_reflex("Add a dashboard please.", skip_retrieval=True, verbose=True)
+        assert result_verbose_again.verbose is True
+        assert len(result_verbose_again.trace) > 0
+
+        # Critic called only once because cache served subsequent calls
+        assert mock_critic.call_count == 1
+
+    _decision_cache.clear()
+
+
 # ---------------------------------------------------------------------------
 # Existing bypass / pause behaviour unchanged
 # ---------------------------------------------------------------------------

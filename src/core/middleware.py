@@ -30,11 +30,13 @@ New env vars:
   HERMES_REFLEX_DECISION_CACHE_TTL_SECONDS TTL for decision cache (default 300)
   HERMES_REFLEX_ASYNC_LOGGING            Set to "true" to defer GBrain writes (default false)
   HERMES_REFLEX_SKIP_RETRIEVAL           Set to "true" to skip embedding search globally
+  HERMES_REFLEX_VERBOSE                  Set to "true" to enable pipeline trace output globally
 """
 
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import hashlib
 import logging
 import os
@@ -45,6 +47,7 @@ from typing import Any, Optional
 
 from .schemas import ReflexResult
 from .response_modes import get_hermes_instruction
+from .trace import TraceEntry
 
 log = logging.getLogger(__name__)
 
@@ -212,6 +215,7 @@ def process_reflex(
     enabled: Optional[bool] = None,
     skip_retrieval: bool = False,
     skip_critic: bool = False,
+    verbose: bool = False,
 ) -> ReflexResult:
     """Process one user message through the Reflex adaptive pipeline.
 
@@ -222,38 +226,60 @@ def process_reflex(
         enabled: If False, returns ALLOW immediately.
         skip_retrieval: Skip the embedding retrieval step (testing/override).
         skip_critic: Skip the critic LLM call (testing/override).
+        verbose: If True, collect and return a pipeline trace in the result.
 
     Returns:
         ReflexResult — NEVER None, all errors degrade to ALLOW.
     """
+    verbose = verbose or _env_truthy("HERMES_REFLEX_VERBOSE")
+    _trace: list[TraceEntry] = []
+
     # -----------------------------------------------------------------------
     # 0. Bypass check — Reflex commands skip the entire pipeline
     # -----------------------------------------------------------------------
+    _stage_start = time.monotonic()
     if _is_reflex_command(user_message):
-        return _build_allow_result(
+        result = _build_allow_result(
             reason="Reflex command — bypassed",
             include_reflex_instructions=include_reflex_instructions,
         )
+        if verbose:
+            result.verbose = True
+            result.trace = [TraceEntry("bypass_check", "⏭ Bypassed", "Reflex command — skipped pipeline", _t(_stage_start))]
+        return result
+    if verbose:
+        _trace.append(TraceEntry("bypass_check", "✅ Pass", "Not a Reflex command", _t(_stage_start)))
 
     # -----------------------------------------------------------------------
     # 1. Enabled / pause check
     # -----------------------------------------------------------------------
+    _stage_start = time.monotonic()
     enabled = enabled if enabled is not None else True
     if not enabled:
-        return _build_allow_result(
+        result = _build_allow_result(
             reason="Reflex disabled",
             include_reflex_instructions=include_reflex_instructions,
         )
+        if verbose:
+            result.verbose = True
+            result.trace = [*_trace, TraceEntry("pause_check", "⏭ Skipped", "Reflex disabled", _t(_stage_start))]
+        return result
 
     try:
         from .pause import is_paused
         if is_paused():
-            return _build_allow_result(
+            result = _build_allow_result(
                 reason="Reflex paused",
                 include_reflex_instructions=include_reflex_instructions,
             )
+            if verbose:
+                result.verbose = True
+                result.trace = [*_trace, TraceEntry("pause_check", "⏭ Skipped", "Reflex paused", _t(_stage_start))]
+            return result
     except Exception as exc:
         log.warning("[Reflex] pause check failed: %s", exc)
+    if verbose:
+        _trace.append(TraceEntry("pause_check", "✅ Pass", "Not paused", _t(_stage_start)))
 
     # -----------------------------------------------------------------------
     # 2. Fast local checks (rules + contract) — no external calls
@@ -262,6 +288,7 @@ def process_reflex(
     contract_conflict: dict[str, Any] = {}
     experiments: list[dict] = []
 
+    _stage_start = time.monotonic()
     try:
         from .rule_engine import evaluate_rules
         from .operating_contract import load_contract
@@ -283,7 +310,17 @@ def process_reflex(
             "recommended_mode": "ALLOW",
             "matched_terms": [],
         }
+    if verbose:
+        flags = rule_result.get("risk_flags", [])
+        detail = "No risk flags matched" if not flags else f"Flags: {', '.join(str(f) for f in flags)}"
+        _trace.append(TraceEntry(
+            "rules_check",
+            "✅ Pass" if not flags else "⚠️ Risk detected",
+            detail,
+            _t(_stage_start),
+        ))
 
+    _stage_start = time.monotonic()
     try:
         from .operating_contract import check_contract_conflict
         conflict = check_contract_conflict(user_message)
@@ -291,10 +328,20 @@ def process_reflex(
     except Exception as exc:
         log.warning("[Reflex] contract check failed: %s", exc)
         contract_conflict = {"conflict": False}
+    if verbose:
+        has_conflict = contract_conflict.get("conflict", False)
+        detail = "No conflicts" if not has_conflict else f"Conflict: {contract_conflict.get('constraint', '?')}"
+        _trace.append(TraceEntry(
+            "contract_check",
+            "✅ Pass" if not has_conflict else "🚫 Conflict",
+            detail,
+            _t(_stage_start),
+        ))
 
     # -----------------------------------------------------------------------
     # 3. Route — classify into SAFE / RISKY / UNCLEAR
     # -----------------------------------------------------------------------
+    _stage_start = time.monotonic()
     from .router import route_message
 
     route_info = route_message(
@@ -305,15 +352,22 @@ def process_reflex(
         },
     )
     route = route_info["route"]
+    if verbose:
+        symbol = "✅ SAFE" if route == "SAFE" else "🚦 RISKY"
+        _trace.append(TraceEntry("route", symbol, route_info.get("reason", route), _t(_stage_start)))
 
     # -----------------------------------------------------------------------
     # 4. SAFE fast path — return immediately, skip retrieval / critic / logging
     # -----------------------------------------------------------------------
     if route == "SAFE":
-        return _build_allow_result(
+        result = _build_allow_result(
             reason="Fast path: no risk detected",
             include_reflex_instructions=include_reflex_instructions,
         )
+        if verbose:
+            result.verbose = True
+            result.trace = _trace
+        return result
 
     # -----------------------------------------------------------------------
     # 5. Decision cache (RISKY / UNCLEAR only)
@@ -323,10 +377,29 @@ def process_reflex(
     experiment_ids = [str(e.get("name", "")) for e in experiments]
     cache_key = _make_cache_key(user_message, contract_hash, experiment_ids)
 
+    _stage_start = time.monotonic()
     cached = _get_cached(cache_key)
     if cached is not None:
+        if verbose:
+            _trace.append(TraceEntry("cache_check", "✅ Cache hit", "Returning cached decision", _t(_stage_start)))
+            cached_with_trace = ReflexResult(
+                mode=cached.mode,
+                risk_type=cached.risk_type,
+                confidence=cached.confidence,
+                severity=cached.severity,
+                hermes_instruction=cached.hermes_instruction,
+                evidence=copy.deepcopy(cached.evidence),
+                decision_id=cached.decision_id,
+                mode_raw=copy.deepcopy(cached.mode_raw),
+                verbose=True,
+                trace=list(_trace),
+            )
+            log.debug("[Reflex] decision cache hit for message fingerprint")
+            return cached_with_trace
         log.debug("[Reflex] decision cache hit for message fingerprint")
         return cached
+    if verbose:
+        _trace.append(TraceEntry("cache_check", "⏭ Miss", "No cached decision", _t(_stage_start)))
 
     # -----------------------------------------------------------------------
     # 6. Retrieval — only for RISKY / UNCLEAR paths
@@ -334,6 +407,7 @@ def process_reflex(
     retrieved_evidence: list[dict[str, Any]] = []
     skip_retrieval = skip_retrieval or _env_truthy("HERMES_REFLEX_SKIP_RETRIEVAL")
 
+    _stage_start = time.monotonic()
     if route_info.get("requires_retrieval") and not skip_retrieval:
         try:
             from ..embeddings.search import search_reflex_memory
@@ -361,16 +435,30 @@ def process_reflex(
             ]
         except Exception as exc:
             log.warning("[Reflex] retrieval failed: %s", exc)
+    if verbose:
+        if not route_info.get("requires_retrieval") or skip_retrieval:
+            _trace.append(TraceEntry("retrieval", "⏭ Skipped", "Not required for this route", _t(_stage_start)))
+        else:
+            count = len(retrieved_evidence)
+            items = "; ".join(
+                f"[{e.get('score', 0):.0%}] {e.get('title') or e.get('path', '?')}"
+                for e in retrieved_evidence[:3]
+            )
+            detail = f"{count} evidence item(s)" + (f": {items}" if items else "")
+            _trace.append(TraceEntry("retrieval", "🔍 Retrieved", detail, _t(_stage_start)))
 
     # -----------------------------------------------------------------------
     # 7. Recent patterns
     # -----------------------------------------------------------------------
     recent_patterns: list[dict[str, Any]] = []
+    _stage_start = time.monotonic()
     try:
         from ..gbrain.storage import read_active_patterns
         recent_patterns = read_active_patterns()
     except Exception as exc:
         log.warning("[Reflex] patterns load failed: %s", exc)
+    if verbose:
+        _trace.append(TraceEntry("recent_patterns", "📋 Loaded", f"{len(recent_patterns)} active pattern(s)", _t(_stage_start)))
 
     # -----------------------------------------------------------------------
     # 8. Critic call — with hard timeout and deterministic fallback
@@ -389,6 +477,8 @@ def process_reflex(
     )
     timeout_ms = int(os.environ.get("HERMES_REFLEX_CRITIC_TIMEOUT_MS", "700"))
 
+    _stage_start = time.monotonic()
+    decision = None
     if critic_enabled and route_info.get("requires_critic"):
         try:
             active_experiments: list[dict] = []
@@ -424,12 +514,25 @@ def process_reflex(
             log.warning("[Reflex] critic call failed: %s", exc)
             critic_reason = "Critic unavailable — defaulting to ALLOW."
 
+    if verbose:
+        if not critic_enabled or not route_info.get("requires_critic"):
+            _trace.append(TraceEntry("critic_call", "⏭ Skipped", "Critic disabled or not required", _t(_stage_start)))
+        elif decision is None:
+            _trace.append(TraceEntry("critic_call", "⏱ Timeout", f"Timed out after {timeout_ms}ms — rule fallback", _t(_stage_start)))
+        else:
+            _trace.append(TraceEntry("critic_call", "✅ Done", f"{critic_mode} (confidence {critic_confidence:.0%})", _t(_stage_start)))
+
     # -----------------------------------------------------------------------
     # 9. Select mode — rules enforce when critic is permissive (fail-secure)
     # -----------------------------------------------------------------------
+    _stage_start = time.monotonic()
     rule_mode = str(rule_result.get("recommended_mode") or "ALLOW")
     rule_flags = list(rule_result.get("risk_flags") or [])
+    rule_override_applied = False
+    contract_override_applied = False
+
     if critic_mode == "ALLOW" and rule_mode not in ("", "ALLOW") and rule_flags:
+        rule_override_applied = True
         critic_mode = rule_mode
         critic_risk_type = str(rule_flags[0])
         critic_confidence = max(
@@ -451,6 +554,7 @@ def process_reflex(
         contract_conflict.get("conflict")
         and contract_conflict.get("recommended_mode") == "REQUIRE_OVERRIDE"
     ):
+        contract_override_applied = True
         critic_mode = "REQUIRE_OVERRIDE"
         critic_risk_type = "contract_conflict"
         critic_confidence = max(critic_confidence, contract_conflict.get("confidence", 0.85))
@@ -460,6 +564,14 @@ def process_reflex(
         allow_override = True
 
     mode = critic_mode
+    if verbose:
+        if rule_override_applied:
+            detail = f"Rule override applied: {mode}"
+        elif contract_override_applied:
+            detail = f"Contract override applied: {mode}"
+        else:
+            detail = f"No override needed: {mode}"
+        _trace.append(TraceEntry("mode_select", "✅ Done", detail, _t(_stage_start)))
 
     # -----------------------------------------------------------------------
     # 10. Build Hermes instruction
@@ -539,9 +651,23 @@ def process_reflex(
         evidence=retrieved_evidence,
         decision_id=decision_id,
         mode_raw=mode_raw,
+        verbose=verbose,
+        trace=_trace if verbose else [],
     )
 
-    _set_cached(cache_key, final_result, cache_ttl)
+    cache_result = ReflexResult(
+        mode=final_result.mode,
+        risk_type=final_result.risk_type,
+        confidence=final_result.confidence,
+        severity=final_result.severity,
+        hermes_instruction=final_result.hermes_instruction,
+        evidence=copy.deepcopy(final_result.evidence),
+        decision_id=final_result.decision_id,
+        mode_raw=copy.deepcopy(final_result.mode_raw),
+        verbose=False,
+        trace=[],
+    )
+    _set_cached(cache_key, cache_result, cache_ttl)
 
     return final_result
 
@@ -549,6 +675,11 @@ def process_reflex(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _t(start: float) -> float:
+    """Return elapsed ms since start (monotonic)."""
+    return (time.monotonic() - start) * 1000.0
+
 
 def _env_truthy(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}

@@ -35,6 +35,24 @@ from .pause import run_pause, run_resume, run_pause_status
 
 log = logging.getLogger(__name__)
 
+# Verbose mode toggle, scoped per chat/session (fallback key 0 for non-chat callers)
+_verbose_enabled_by_chat: dict[int, bool] = {}
+
+
+def _chat_key(chat_id: Optional[int]) -> int:
+    """Normalize chat key for per-chat state maps."""
+    return int(chat_id or 0)
+
+
+def _is_verbose_enabled(chat_id: Optional[int]) -> bool:
+    """Return whether verbose mode is enabled for this chat/session."""
+    return _verbose_enabled_by_chat.get(_chat_key(chat_id), False)
+
+
+def _set_verbose_enabled(chat_id: Optional[int], enabled: bool) -> None:
+    """Set per-chat verbose mode toggle."""
+    _verbose_enabled_by_chat[_chat_key(chat_id)] = enabled
+
 
 # --------------------------------------------------------------------------
 # Check-in state tracker (session-level)
@@ -92,7 +110,7 @@ def route_telegram_message(
     # ------------------------------------------------------------------
     # /experiment
     # ------------------------------------------------------------------
-    if text.startswith("/experiment"):
+    if text.startswith("/experiment") or text.startswith("/experiments"):
         return _handle_experiment(text)
 
     # ------------------------------------------------------------------
@@ -105,7 +123,7 @@ def route_telegram_message(
     # /reflex
     # ------------------------------------------------------------------
     if text.startswith("/reflex"):
-        return _handle_reflex(text)
+        return _handle_reflex(text, chat_id)
 
     # ------------------------------------------------------------------
     # /review
@@ -133,6 +151,7 @@ def route_telegram_message(
         "/checkin\\n"
         "/experiment create <name>\\n"
         "/experiment list\\n"
+        "/experiments\\n"
         "/patterns\\n"
         "/reflex <question>\\n"
         "/review\\n"
@@ -260,8 +279,14 @@ def _build_checkin_prompt(session: dict) -> str:
 
 
 def _handle_experiment(text: str) -> str:
-    """Handle /experiment create <name> or /experiment list."""
-    match = re.match(r"^/experiment\s+create\s+(.+)$", text)
+    """Handle /experiment create <name>, /experiment list, and /experiments alias."""
+    normalized = text.strip()
+
+    # Alias: /experiments -> /experiment list
+    if re.match(r"^/experiments\s*$", normalized, re.IGNORECASE):
+        return run_experiment_list()
+
+    match = re.match(r"^/experiment\s+create\s+(.+)$", normalized)
     if match:
         name = match.group(1).strip()
         try:
@@ -271,21 +296,23 @@ def _handle_experiment(text: str) -> str:
             return f"Failed to create experiment: {exc}"
 
     # /experiment list
-    if re.match(r"^/experiment\s+list\s*$", text, re.IGNORECASE):
+    if re.match(r"^/experiment\s+list\s*$", normalized, re.IGNORECASE):
         return run_experiment_list()
 
     # Bare /experiment
-    if text.strip() == "/experiment":
+    if normalized == "/experiment":
         return (
             "*Usage:*\\n"
             "/experiment create <name>\\n"
-            "/experiment list"
+            "/experiment list\\n"
+            "/experiments"
         )
 
     return (
         "*Usage:*\\n"
         "/experiment create <name>\\n"
-        "/experiment list"
+        "/experiment list\\n"
+        "/experiments"
     )
 
 
@@ -294,8 +321,9 @@ def _handle_patterns(text: str) -> str:
     return run_patterns_command(text)
 
 
-def _handle_reflex(text: str) -> str:
-    """Handle /reflex <question> and /reflex pause/resume."""
+def _handle_reflex(text: str, chat_id: Optional[int] = None) -> str:
+    """Handle /reflex <question> and /reflex pause/resume/verbose."""
+
     # /reflex pause today
     if re.search(r"pause\s+today", text, re.IGNORECASE):
         return run_pause("today")
@@ -306,12 +334,37 @@ def _handle_reflex(text: str) -> str:
     if re.search(r"resume", text, re.IGNORECASE):
         return run_resume()
 
+    # /reflex verbose on
+    if re.search(r"^/reflex\s+verbose\s+on\s*$", text, re.IGNORECASE):
+        _set_verbose_enabled(chat_id, True)
+        return "🔍 Verbose mode *on* for this chat. Trace will be appended to each /reflex response."
+
+    # /reflex verbose off
+    if re.search(r"^/reflex\s+verbose\s+off\s*$", text, re.IGNORECASE):
+        _set_verbose_enabled(chat_id, False)
+        return "🔇 Verbose mode *off* for this chat."
+
+    # /reflex verbose (status)
+    if re.search(r"^/reflex\s+verbose\s*$", text, re.IGNORECASE):
+        state = "on" if _is_verbose_enabled(chat_id) else "off"
+        return f"🔍 Verbose mode is *{state}* for this chat."
+
+    # verbose: one-shot prefix — run with verbose=True regardless of chat toggle
+    match = re.match(r"^/reflex\s+verbose:\s*(.+)$", text, re.IGNORECASE | re.DOTALL)
+    if match:
+        question = match.group(1).strip()
+        try:
+            return run_reflex_query(question, verbose=True)
+        except Exception as exc:
+            log.warning("[Reflex] /reflex verbose: query failed: %s", exc)
+            return f"Reflex verbose query failed: {exc}"
+
     # /reflex <question>
     match = re.match(r"^/reflex\s+(.+)$", text)
     if match:
         question = match.group(1).strip()
         try:
-            return run_reflex_query(question)
+            return run_reflex_query(question, verbose=_is_verbose_enabled(chat_id))
         except Exception as exc:
             log.warning("[Reflex] /reflex query failed: %s", exc)
             return f"Reflex query failed: {exc}"
@@ -321,7 +374,10 @@ def _handle_reflex(text: str) -> str:
         "/reflex <your question>\\n"
         "/reflex pause today\\n"
         "/reflex pause week\\n"
-        "/reflex resume"
+        "/reflex resume\\n"
+        "/reflex verbose on\\n"
+        "/reflex verbose off\\n"
+        "/reflex verbose:<question>"
     )
 
 

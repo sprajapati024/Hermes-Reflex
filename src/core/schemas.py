@@ -61,6 +61,10 @@ class ReflexResult:
     decision_id: Optional[str] = None
     mode_raw: dict[str, Any] = field(default_factory=dict)
 
+    # Verbose / trace fields — populated when verbose=True
+    verbose: bool = False
+    trace: list[Any] = field(default_factory=list)  # list[TraceEntry]
+
     # Computed — not passed in, derived in __post_init__
     _is_challenge: bool = field(default=False, init=False)
 
@@ -82,4 +86,14 @@ class ReflexResult:
             "evidence": self.evidence,
             "decision_id": self.decision_id,
             "is_challenge": self._is_challenge,
+            "verbose": self.verbose,
+            "trace": [
+                {
+                    "stage": e.stage,
+                    "status": e.status,
+                    "detail": e.detail,
+                    "latency_ms": round(e.latency_ms, 1),
+                }
+                for e in self.trace
+            ] if self.verbose else [],
         }
