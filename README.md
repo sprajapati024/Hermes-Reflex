@@ -233,7 +233,7 @@ src/
   reviews/       — weekly review generator
   interventions/ — skillify candidate detection
   experiments/   — experiment CRUD
-tests/           — 341 unit + integration tests
+tests/           — 398 unit + integration tests
 ```
 
 ---
@@ -279,7 +279,7 @@ All 10 phases complete and on `main`.
 | 9 | Weekly review generator | `02983ae` |
 | 10 | Skillify candidates | `02983ae` |
 
-**Latest:** `fcd8916` — MiniMax critic provider + rule-mode fallback + skip_retrieval env
+**Latest:** `b7bf834` — merged PR #4 (verbose pipeline mode, per-chat `/reflex verbose`, `/experiments` alias, cache leakage hardening)
 
 ---
 
